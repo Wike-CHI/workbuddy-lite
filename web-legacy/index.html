@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WorkBuddy Lite</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"><img src="/icon.svg" alt="WorkBuddy Lite" /></div>
+      <div class="brand-text">
+        <strong>WorkBuddy <span>Lite</span></strong>
+        <small>C++ · WebView2 · ACP</small>
+      </div>
+    </div>
+    <button id="new-session" class="new-btn"><span>＋</span> 新会话</button>
+    <div id="session-list" class="session-list"></div>
+    <div class="sidebar-foot">
+      <div class="status-row"><span id="status-dot" class="dot"></span><span id="status-text">正在启动…</span></div>
+      <div class="status-sub"><span id="model-name">—</span><span id="quota-badge" class="mini">额度 —</span></div>
+      <button id="market-btn" class="side-btn">技能 · 连接器 · 插件市场</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="title-block">
+        <h1 id="chat-title">新会话</h1>
+        <div class="meta-row">
+          <button id="cwd-chip" class="chip cwd-chip" title="切换或打开工作空间"></button>
+          <span id="demo-chip" class="chip warn hidden">演示模式</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <select id="model-select" class="model-select" title="模型（含积分倍率）"></select>
+        <select id="mode-select" class="mode-select" title="权限模式">
+          <option value="default">每次询问</option>
+          <option value="acceptEdits">自动改文件</option>
+          <option value="plan">只读规划</option>
+          <option value="fullAccess">完全放行</option>
+        </select>
+        <div class="usage" title="上下文用量">
+          <svg viewBox="0 0 36 36" class="usage-ring">
+            <circle cx="18" cy="18" r="15" class="ring-bg"></circle>
+            <circle id="usage-arc" cx="18" cy="18" r="15" class="ring-fg"></circle>
+          </svg>
+          <span id="usage-text">0</span>
+        </div>
+        <button id="credit-btn" class="credit-chip" title="积分、额度与重置时间">
+          <span class="credit-mark">◆</span><span id="credit-text">0</span><span class="credit-unit">积分</span>
+        </button>
+      </div>
+    </header>
+
+    <div id="messages" class="messages">
+      <div class="empty" id="empty-state">
+        <h2>说点什么，让它动手</h2>
+        <p>这个壳只做三件事：把话递给 CodeBuddy、把工具调用画清楚、把权限交回你手里。</p>
+        <div class="suggestions">
+          <button class="sugg">看看当前目录有什么，列个清单</button>
+          <button class="sugg">把 README 里的 TODO 整理成一份计划</button>
+          <button class="sugg">找出这个项目里最大的三个文件</button>
+        </div>
+        <p class="empty-tip">输入 <code>/</code> 选技能，<code>@</code> 选连接器，也可以直接粘贴或拖进图片。</p>
+      </div>
+    </div>
+
+    <footer class="composer">
+      <div class="composer-wrap">
+        <div id="palette" class="palette hidden"></div>
+        <div id="composer-box" class="composer-box">
+          <div class="compose-main">
+            <div id="attach-strip" class="attach-strip hidden"></div>
+            <textarea id="input" rows="1" enterkeyhint="send" placeholder="输入消息，Enter 发送 · Shift+Enter 换行 · / 技能 · @ 连接器"></textarea>
+          </div>
+          <div class="compose-actions">
+            <button id="attach-btn" class="icon-btn" title="添加图片（也可粘贴或拖入）">＋</button>
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+            <button id="send" class="send-btn" title="发送">↑</button>
+          </div>
+        </div>
+      </div>
+      <div class="composer-foot">
+        <span id="foot-status">就绪</span>
+        <span>·</span>
+        <span id="foot-detail">Enter 发送 · Shift+Enter 换行</span>
+        <span class="foot-spacer"></span>
+        <span id="input-count" class="input-count">0 字</span>
+        <button id="catalog-btn" class="foot-btn">技能 / 连接器 / 插件市场</button>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div id="usage-modal" class="modal hidden">
+  <div class="modal-card usage-card">
+    <div class="modal-head">
+      <div class="tabs"><button class="tab active">积分与预算</button></div>
+      <div class="modal-tools">
+        <button id="usage-refresh" class="ghost-btn" title="刷新">↻</button>
+        <button id="usage-close" class="ghost-btn" title="关闭">×</button>
+      </div>
+    </div>
+    <div id="usage-body" class="modal-body usage-body"></div>
+  </div>
+</div>
+
+<div id="ws-modal" class="modal hidden">
+  <div class="modal-card ws-card">
+    <div class="modal-head">
+      <div class="tabs"><button class="tab active">工作空间</button></div>
+      <div class="modal-tools">
+        <button id="ws-refresh" class="ghost-btn" title="重新读取">↻</button>
+        <button id="ws-close" class="ghost-btn" title="关闭">×</button>
+      </div>
+    </div>
+    <div class="modal-body ws-body">
+      <div id="ws-current" class="ws-current"></div>
+      <div class="ws-path-row">
+        <input id="ws-path" class="ws-path" placeholder="输入或粘贴目录路径，例如 D:\repo" />
+        <button id="ws-pick" class="row-btn">浏览…</button>
+        <button id="ws-open" class="row-btn primary">新窗口打开</button>
+      </div>
+      <div class="ws-hint">「切换」只改本窗口的后续会话；「新窗口」会开一个独立进程，两个工作空间互不干扰。</div>
+      <div id="ws-list" class="ws-list"></div>
+    </div>
+  </div>
+</div>
+
+<div id="market-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="tabs">
+        <button class="tab active" data-tab="skills">技能 <span id="tab-skills-n" class="tab-n">0</span></button>
+        <button class="tab" data-tab="connectors">连接器 <span id="tab-connectors-n" class="tab-n">0</span></button>
+        <button class="tab" data-tab="plugins">插件市场 <span id="tab-plugins-n" class="tab-n">0</span></button>
+      </div>
+      <div class="modal-tools">
+        <input id="catalog-filter" class="catalog-filter" placeholder="筛选…" />
+        <button id="catalog-refresh" class="ghost-btn" title="重新读取本地配置">↻</button>
+        <button id="market-close" class="ghost-btn" title="关闭">×</button>
+      </div>
+    </div>
+    <div id="market-body" class="modal-body"></div>
+    <div id="market-foot" class="modal-foot"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

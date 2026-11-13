@@ -1,0 +1,4 @@
+#include <windows.h>
+
+// 应用程序图标：File Explorer / 任务栏 / Alt+Tab 都会优先读这个资源
+1 ICON "src/app.ico"

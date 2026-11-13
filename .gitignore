@@ -1,0 +1,26 @@
+# 构建产物
+bin/
+web/
+frontend/dist/
+frontend/node_modules/
+node_modules/
+
+# 日志与临时文件
+*.log
+build.log
+*.tmp
+*.bak
+*.prev.exe
+*.prev*.exe
+boot_user.json
+
+# 本地数据
+data/
+*.local.json
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
