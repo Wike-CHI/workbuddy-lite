@@ -31,6 +31,8 @@ export function Sidebar() {
   const projectNames = useChatStore((s) => s.projectNames)
   const activeId = useChatStore((s) => s.activeId)
   const cwd = useChatStore((s) => s.cwd)
+  const workspaceName = useChatStore((s) => s.workspaceName)
+  const workspaceFolders = useChatStore((s) => s.workspaceFolders)
   const loadSession = useChatStore((s) => s.loadSession)
   const newSession = useChatStore((s) => s.newSession)
   const useWorkspace = useChatStore((s) => s.useWorkspace)
@@ -109,7 +111,16 @@ export function Sidebar() {
           <div className="text-sm font-semibold tracking-tight text-foreground">
             WorkBuddy <span className="font-semibold text-muted-foreground">Lite</span>
           </div>
-          <div className="text-[10.5px] text-muted-foreground">React · WebView2 · ACP</div>
+          <div className="flex items-center gap-1 text-[10.5px] text-muted-foreground">
+            <span className="truncate" title={workspaceName}>
+              {workspaceName || '未命名工作空间'}
+            </span>
+            {workspaceFolders.length > 1 && (
+              <span className="shrink-0 rounded bg-muted px-1 font-mono text-[9.5px]">
+                {workspaceFolders.length} 文件夹
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

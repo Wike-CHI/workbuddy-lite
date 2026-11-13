@@ -325,6 +325,55 @@ void saveSetting(const std::string& key, const std::string& value) {
   }
 }
 
+// ---------- 工作空间：一个名字 + 最多 5 个文件夹 ----------
+constexpr size_t kMaxWorkspaceFolders = 5;
+
+std::string trimStr(const std::string& s) {
+  size_t b = s.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos) return "";
+  size_t e = s.find_last_not_of(" \t\r\n");
+  return s.substr(b, e - b + 1);
+}
+
+std::string workspacesPath() { return localAppDir() + "\\workspaces.json"; }
+
+json loadWorkspacesDoc() {
+  json doc = readJsonFile(workspacesPath());
+  json arr = jval(doc, "workspaces", json::array());
+  if (!arr.is_array()) arr = json::array();
+  return json{{"workspaces", arr}};
+}
+
+bool saveWorkspacesDoc(const json& doc) {
+  std::string path = workspacesPath();
+  std::string tmp = path + ".tmp";
+  HANDLE mtx = CreateMutexA(nullptr, FALSE, "Local\\WorkBuddyLiteWorkspaces");
+  if (mtx) WaitForSingleObject(mtx, 5000);
+  bool ok = false;
+  std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+  if (out) {
+    out << dumpJson(doc);
+    out.close();
+    ok = MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+  }
+  if (mtx) {
+    ReleaseMutex(mtx);
+    CloseHandle(mtx);
+  }
+  return ok;
+}
+
+std::vector<std::string> foldersOf(const json& ws) {
+  std::vector<std::string> out;
+  if (!ws.is_object()) return out;
+  json arr = jval(ws, "folders", json::array());
+  if (!arr.is_array()) return out;
+  for (const auto& f : arr) {
+    if (f.is_string() && !f.get<std::string>().empty()) out.push_back(f.get<std::string>());
+  }
+  return out;
+}
+
 // ---------- 事件压缩 ----------
 // 流式 text/thought 是逐 token 下发的，原样落盘会让一个会话攒到十几万条、
 // 整份 sessions.json 几十 MB：启动要解析几秒，打开会话直接把前端卡死。
@@ -452,16 +501,115 @@ Backend::Backend(bool demo, std::string cwd, std::string webRoot, bool fresh)
 
   initStore();
 
-  // 没显式传 --cwd 时沿用上次的工作空间，而不是永远落在 exe 所在目录
+  // 没显式传 --cwd 时沿用上次的工作空间；带了 --cwd 时优先把它归到所属工作空间
   if (!cwd_.empty() && !isDirectoryPath(cwd_)) cwd_.clear();
-  if (cwd_.empty()) {
-    std::string last = jstr(readJsonFile(settingsPath()), "lastWorkspace");
-    if (!last.empty() && isDirectoryPath(last)) {
-      cwd_ = last;
-      logf("恢复上次工作空间 " + last);
+  resolveInitialWorkspace();
+}
+
+Backend::~Backend() { stop(); }
+
+std::string Backend::currentCwd() const {
+  std::lock_guard<std::mutex> lk(cwdMu_);
+  return cwd_;
+}
+
+std::string Backend::workspaceName() const {
+  json ws = activeWorkspaceInfo();
+  return jstr(ws, "name", leafName(currentCwd()));
+}
+
+json Backend::findWorkspace(const std::string& id) {
+  if (id.empty()) return json::object();
+  json doc = loadWorkspacesDoc();
+  for (const auto& w : jval(doc, "workspaces", json::array())) {
+    if (jstr(w, "id") == id) return w;
+  }
+  return json::object();
+}
+
+json Backend::workspaceByFolder(const std::string& path) {
+  if (path.empty()) return json::object();
+  std::string key = pathKey(path);
+  json doc = loadWorkspacesDoc();
+  for (const auto& w : jval(doc, "workspaces", json::array())) {
+    for (const auto& f : foldersOf(w)) {
+      if (pathKey(f) == key) return w;
     }
   }
-  if (cwd_.empty()) {
+  return json::object();
+}
+
+json Backend::activeWorkspaceInfo() const {
+  {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    if (activeWorkspace_.is_object() && !activeWorkspace_.empty()) return activeWorkspace_;
+  }
+  std::string cw = currentCwd();
+  return json{{"id", ""}, {"name", leafName(cw)}, {"folders", json::array({cw})}};
+}
+
+// 切到某个工作空间：cwd 用 folders[0]，除非显式指定了本空间里的另一个文件夹
+void Backend::activateWorkspace(const json& ws, bool persist, const std::string& preferredCwd) {
+  if (!ws.is_object() || ws.empty()) return;
+  auto folders = foldersOf(ws);
+  if (folders.empty()) return;
+
+  std::string target = folders[0];
+  if (!preferredCwd.empty()) {
+    for (const auto& f : folders) {
+      if (pathKey(f) == pathKey(preferredCwd)) {
+        target = f;
+        break;
+      }
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    activeWorkspace_ = ws;
+  }
+  {
+    std::lock_guard<std::mutex> lk(cwdMu_);
+    cwd_ = target;
+  }
+  {
+    std::lock_guard<std::mutex> lk(modelMu_);
+    spareAcp_ = json::object();
+  }
+  if (persist) {
+    saveSetting("lastWorkspace", target);
+    saveSetting("lastWorkspaceId", jstr(ws, "id"));
+  }
+  logf("工作空间 -> " + jstr(ws, "name", leafName(target)) + " (" + target + ")");
+}
+
+void Backend::resolveInitialWorkspace() {
+  std::string explicitPath;
+  {
+    std::lock_guard<std::mutex> lk(cwdMu_);
+    explicitPath = cwd_;
+  }
+
+  json target;
+  if (!explicitPath.empty()) {
+    target = workspaceByFolder(explicitPath);
+    if (target.empty()) {
+      target = {{"id", ""}, {"name", leafName(explicitPath)}, {"folders", json::array({explicitPath})}};
+    }
+    activateWorkspace(target, true, explicitPath);
+    return;
+  }
+
+  json settings = readJsonFile(settingsPath());
+  std::string lastId = jstr(settings, "lastWorkspaceId");
+  if (!lastId.empty()) target = findWorkspace(lastId);
+  if (target.empty()) {
+    std::string last = jstr(settings, "lastWorkspace");
+    if (!last.empty() && isDirectoryPath(last)) target = workspaceByFolder(last);
+    if (target.empty() && !last.empty() && isDirectoryPath(last)) {
+      target = {{"id", ""}, {"name", leafName(last)}, {"folders", json::array({last})}};
+    }
+  }
+  if (target.empty()) {
     // 没记过偏好时跟随最近一次会话所在目录，最后才退回 exe 目录
     std::string recent;
     int64_t at = 0;
@@ -477,15 +625,10 @@ Backend::Backend(bool demo, std::string cwd, std::string webRoot, bool fresh)
         }
       }
     }
-    cwd_ = recent.empty() ? exeDir() : recent;
+    std::string dir = recent.empty() ? exeDir() : recent;
+    target = {{"id", ""}, {"name", leafName(dir)}, {"folders", json::array({dir})}};
   }
-}
-
-Backend::~Backend() { stop(); }
-
-std::string Backend::currentCwd() const {
-  std::lock_guard<std::mutex> lk(cwdMu_);
-  return cwd_;
+  activateWorkspace(target, false);
 }
 
 void Backend::initStore() {
@@ -1013,6 +1156,26 @@ json Backend::workspaceList() {
   };
 
   add(cw, leafName(cw), "current");
+
+  // 自建工作空间优先：带完整文件夹列表，界面上可以编辑
+  const std::string activeId = jstr(activeWorkspaceInfo(), "id");
+  {
+    json doc = loadWorkspacesDoc();
+    for (const auto& w : jval(doc, "workspaces", json::array())) {
+      auto folders = foldersOf(w);
+      if (folders.empty() || !isDirectoryPath(folders[0])) continue;
+      std::string key = pathKey(folders[0]);
+      if (!seen.insert(key).second) continue;
+      std::string id = jstr(w, "id");
+      list.push_back({{"id", id},
+                      {"path", folders[0]},
+                      {"label", jstr(w, "name", leafName(folders[0]))},
+                      {"source", "custom"},
+                      {"folders", folders},
+                      {"active", !id.empty() && id == activeId},
+                      {"current", samePath(folders[0], cw)}});
+    }
+  }
   if (!demo_) {
     json ws = agentGet("/api/v1/sessions/workspaces");
     for (const auto& w : jval(ws, "workspaces", json::array())) {
@@ -1042,8 +1205,12 @@ json Backend::workspaceList() {
       }
     }
   }
+  json active = activeWorkspaceInfo();
   return json{{"cwd", cw},
-              {"workspace", leafName(cw)},
+              {"workspace", jstr(active, "name", leafName(cw))},
+              {"workspaceId", jstr(active, "id")},
+              {"workspaceName", jstr(active, "name", leafName(cw))},
+              {"workspaceFolders", foldersOf(active)},
               {"agentReady", agentReady_.load()},
               {"demo", demo_},
               {"workspaces", list}};
@@ -1561,9 +1728,14 @@ void Backend::handleBootstrap(const httplib::Request&, httplib::Response& res) {
       }
     }
   }
+  json ws = activeWorkspaceInfo();
+  auto wsFolders = foldersOf(ws);
   json out = {{"demo", demo_},
               {"cwd", cw},
-              {"workspace", leafName(cw)},
+              {"workspace", jstr(ws, "name", leafName(cw))},
+              {"workspaceId", jstr(ws, "id")},
+              {"workspaceName", jstr(ws, "name", leafName(cw))},
+              {"workspaceFolders", wsFolders},
               {"fresh", fresh_},
               {"port", port_},
               {"agentReady", agentReady_.load()},
@@ -1731,6 +1903,20 @@ void Backend::handleChat(const httplib::Request& req, httplib::Response& res) {
     }
   }
 
+  // 多文件夹工作空间：cwd 只是第一个文件夹，其余要把绝对路径告诉模型
+  {
+    json ws = activeWorkspaceInfo();
+    auto folders = foldersOf(ws);
+    if (folders.size() > 1) {
+      std::string note = "当前工作空间「" + jstr(ws, "name", leafName(folders[0])) +
+                         "」包含以下文件夹（工作目录是第一个，其余需要时用绝对路径访问）：\n";
+      for (size_t i = 0; i < folders.size(); ++i)
+        note += std::to_string(i + 1) + ". " + folders[i] + "\n";
+      note += "\n";
+      promptText = note + promptText;
+    }
+  }
+
   std::thread([this, uiId, promptText, mode, model, promptImages] {
     if (demo_) runDemo(uiId, promptText);
     else runPrompt(uiId, promptText, mode, promptImages, model);
@@ -1894,22 +2080,38 @@ void Backend::handleWorkspaceOpen(const httplib::Request& req, httplib::Response
 
 void Backend::handleWorkspaceUse(const httplib::Request& req, httplib::Response& res) {
   json body = json::parse(req.body, nullptr, false);
+  std::string id = jstr(body, "id");
   std::string path = jstr(body, "path");
-  if (!isDirectoryPath(path)) {
-    res.status = 400;
-    res.set_content(dumpJson(json{{"error", "目录不存在"}}), "application/json");
-    return;
+
+  json ws;
+  if (!id.empty()) {
+    ws = findWorkspace(id);
+    if (ws.empty()) {
+      res.status = 404;
+      res.set_content(dumpJson(json{{"ok", false}, {"error", "工作空间不存在"}}),
+                      "application/json; charset=utf-8");
+      return;
+    }
+  } else {
+    if (!isDirectoryPath(path)) {
+      res.status = 400;
+      res.set_content(dumpJson(json{{"ok", false}, {"error", "目录不存在"}}),
+                      "application/json; charset=utf-8");
+      return;
+    }
+    ws = workspaceByFolder(path);
+    if (ws.empty()) {
+      ws = {{"id", ""}, {"name", leafName(path)}, {"folders", json::array({path})}};
+    }
   }
-  {
-    std::lock_guard<std::mutex> lk(cwdMu_);
-    cwd_ = path;
-  }
-  {
-    std::lock_guard<std::mutex> lk(modelMu_);
-    spareAcp_ = json::object();
-  }
-  saveSetting("lastWorkspace", path);
-  res.set_content(dumpJson(json{{"ok", true}, {"cwd", path}, {"workspace", leafName(path)}}),
+
+  activateWorkspace(ws, true, path);
+  auto folders = foldersOf(ws);
+  res.set_content(dumpJson(json{{"ok", true},
+                                {"cwd", currentCwd()},
+                                {"workspace", jstr(ws, "name", leafName(currentCwd()))},
+                                {"id", jstr(ws, "id")},
+                                {"folders", folders}}),
                   "application/json; charset=utf-8");
 }
 
@@ -1960,7 +2162,27 @@ void Backend::handleWorkspaceCreate(const httplib::Request& req, httplib::Respon
                       "application/json; charset=utf-8");
       return;
     }
-    // 记进 projects.json，工作空间列表里就能按这个名字找到（哪怕还没有会话）
+  }
+
+  // 建（或复用）一个单文件夹工作空间，并切过去
+  json ws = workspaceByFolder(path);
+  if (ws.empty()) {
+    ws = {{"id", randomId("ws_")},
+          {"name", name},
+          {"folders", json::array({path})},
+          {"createdAt", nowMs()},
+          {"updatedAt", nowMs()}};
+    json doc = loadWorkspacesDoc();
+    json arr = jval(doc, "workspaces", json::array());
+    arr.push_back(ws);
+    doc["workspaces"] = arr;
+    saveWorkspacesDoc(doc);
+  } else {
+    existed = true;
+  }
+
+  // 侧栏按 cwd 分组，名字也从这里取
+  {
     json doc = readJsonFile(projectsFilePath());
     json projects = jval(doc, "projects", json::object());
     if (!projects.is_object()) projects = json::object();
@@ -1968,12 +2190,167 @@ void Backend::handleWorkspaceCreate(const httplib::Request& req, httplib::Respon
     doc["projects"] = projects;
     saveProjectsDoc(doc);
   }
+  activateWorkspace(ws, true, path);
   logf("新建工作空间 " + path + (existed ? "（已存在）" : ""));
   res.set_content(dumpJson(json{{"ok", true},
                                 {"path", path},
-                                {"workspace", name},
+                                {"workspace", jstr(ws, "name", name)},
+                                {"id", jstr(ws, "id")},
+                                {"folders", foldersOf(ws)},
                                 {"existed", existed}}),
                   "application/json; charset=utf-8");
+}
+
+// 新建或编辑：{id?, name, folders[]}
+void Backend::handleWorkspaceSave(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  auto fail = [&](int code, const std::string& msg) {
+    res.status = code;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", msg}}), "application/json; charset=utf-8");
+  };
+
+  std::string name = trimStr(jstr(body, "name"));
+  if (name.empty()) return fail(400, "工作空间名称不能为空");
+  if (name.size() > 180) return fail(400, "名称太长（最多 180 字节）");
+
+  std::vector<std::string> folders;
+  for (const auto& f : jval(body, "folders", json::array())) {
+    if (!f.is_string()) continue;
+    std::string p = f.get<std::string>();
+    std::string canon = canonicalPath(p);
+    if (!canon.empty()) p = canon;
+    if (!isDirectoryPath(p)) return fail(400, "文件夹不存在：" + p);
+    bool dup = false;
+    for (const auto& x : folders) {
+      if (pathKey(x) == pathKey(p)) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) folders.push_back(p);
+  }
+  if (folders.empty()) return fail(400, "至少选择一个文件夹");
+  if (folders.size() > kMaxWorkspaceFolders) return fail(400, "一个工作空间最多 5 个文件夹");
+
+  std::string id = jstr(body, "id");
+  json doc = loadWorkspacesDoc();
+  json arr = jval(doc, "workspaces", json::array());
+
+  json saved;
+  for (auto& w : arr) {
+    if (!w.is_object()) continue;
+    if (!id.empty() && jstr(w, "id") == id) {
+      w["name"] = name;
+      w["folders"] = folders;
+      w["updatedAt"] = nowMs();
+      saved = w;
+      break;
+    }
+  }
+  if (saved.empty()) {
+    // 同一个主文件夹只归属一个工作空间，避免列表里出现两条一样的
+    for (const auto& w : arr) {
+      auto wf = foldersOf(w);
+      if (!wf.empty() && pathKey(wf[0]) == pathKey(folders[0]))
+        return fail(400, "这个文件夹已经属于工作空间「" + jstr(w, "name", "") + "」");
+    }
+    saved = {{"id", randomId("ws_")},
+             {"name", name},
+             {"folders", folders},
+             {"createdAt", nowMs()},
+             {"updatedAt", nowMs()}};
+    arr.push_back(saved);
+  }
+  doc["workspaces"] = arr;
+  if (!saveWorkspacesDoc(doc)) return fail(500, "保存工作空间失败");
+
+  // 主文件夹的名字同步给侧栏分组
+  {
+    json pdoc = readJsonFile(projectsFilePath());
+    json projects = jval(pdoc, "projects", json::object());
+    if (!projects.is_object()) projects = json::object();
+    projects[pathKey(folders[0])] = {{"path", folders[0]}, {"name", name}, {"updatedAt", nowMs()}};
+    pdoc["projects"] = projects;
+    saveProjectsDoc(pdoc);
+  }
+
+  // 改的正好是当前工作空间 → 立刻生效（cwd 还在列表里就保持不变）
+  if (jstr(activeWorkspaceInfo(), "id") == jstr(saved, "id")) {
+    activateWorkspace(saved, true, currentCwd());
+  }
+
+  if (!demo_) {
+    std::lock_guard<std::mutex> lk(wsCacheMu_);
+    wsCacheAt_ = 0;  // 让工作空间对话框下次重新读
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"workspace", saved}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleWorkspaceRemove(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string id = jstr(body, "id");
+  if (id.empty()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少 id"}}), "application/json");
+    return;
+  }
+  json doc = loadWorkspacesDoc();
+  json arr = json::array();
+  bool removed = false;
+  for (const auto& w : jval(doc, "workspaces", json::array())) {
+    if (jstr(w, "id") == id) {
+      removed = true;
+      continue;
+    }
+    arr.push_back(w);
+  }
+  if (!removed) {
+    res.status = 404;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "工作空间不存在"}}), "application/json");
+    return;
+  }
+  doc["workspaces"] = arr;
+  saveWorkspacesDoc(doc);
+
+  bool wasActive = false;
+  {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    if (jstr(activeWorkspace_, "id") == id) {
+      activeWorkspace_ = json::object();
+      wasActive = true;
+    }
+  }
+  if (wasActive) {
+    // 只删掉分组，不删文件夹；当前 cwd 保持原样
+    saveSetting("lastWorkspaceId", "");
+  }
+  res.set_content(dumpJson(json{{"ok", true}}), "application/json; charset=utf-8");
+}
+
+json Backend::renameWorkspaceByFolder(const std::string& path, const std::string& name) {
+  if (path.empty() || name.empty()) return json::object();
+  std::string key = pathKey(path);
+  json doc = loadWorkspacesDoc();
+  json arr = jval(doc, "workspaces", json::array());
+  json updated;
+  for (auto& w : arr) {
+    if (!w.is_object()) continue;
+    auto folders = foldersOf(w);
+    if (folders.empty() || pathKey(folders[0]) != key) continue;
+    w["name"] = name;
+    w["updatedAt"] = nowMs();
+    updated = w;
+    break;
+  }
+  if (updated.empty()) return updated;
+  doc["workspaces"] = arr;
+  saveWorkspacesDoc(doc);
+  if (jstr(activeWorkspaceInfo(), "id") == jstr(updated, "id")) {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    activeWorkspace_ = updated;
+  }
+  return updated;
 }
 
 void Backend::handleFile(const httplib::Request& req, httplib::Response& res) {
@@ -1993,7 +2370,14 @@ void Backend::handleFile(const httplib::Request& req, httplib::Response& res) {
   if (candidate.is_relative()) candidate = std::filesystem::path(utf8ToWide(cwd)) / candidate;
   std::string full = wideToUtf8(candidate.wstring());
 
-  if (!isPathInside(cwd, full)) {
+  bool inside = false;
+  for (const auto& folder : foldersOf(activeWorkspaceInfo())) {
+    if (isPathInside(folder, full)) {
+      inside = true;
+      break;
+    }
+  }
+  if (!inside) {
     res.status = 403;
     res.set_content(dumpJson(json{{"error", "只能读取当前工作空间内的文件"}}), "application/json");
     return;
@@ -2062,6 +2446,7 @@ void Backend::handleProjectRename(const httplib::Request& req, httplib::Response
   projects[pathKey(path)] = {{"path", path}, {"name", name}, {"updatedAt", nowMs()}};
   doc["projects"] = projects;
   saveProjectsDoc(doc);
+  renameWorkspaceByFolder(path, name);
   res.set_content(dumpJson(json{{"ok", true}}), "application/json");
 }
 
@@ -2085,6 +2470,11 @@ void Backend::handleProjectApply(const httplib::Request& req, httplib::Response&
     }
     doc["projects"] = projects;
     saveProjectsDoc(doc);
+    for (const auto& p : incomingProjects) {
+      std::string path = jstr(p, "path", jstr(p, "cwd"));
+      std::string name = jstr(p, "name");
+      if (!path.empty() && !name.empty()) renameWorkspaceByFolder(path, name);
+    }
   }
 
   if (incomingSessions.is_array() && !incomingSessions.empty()) {
@@ -2256,6 +2646,8 @@ void Backend::setupRoutes() {
   srv_.Post("/api/workspaces/use", [this](const auto& r, auto& s) { handleWorkspaceUse(r, s); });
   srv_.Post("/api/workspaces/pick", [this](const auto& r, auto& s) { handleWorkspacePick(r, s); });
   srv_.Post("/api/workspaces/create", [this](const auto& r, auto& s) { handleWorkspaceCreate(r, s); });
+  srv_.Post("/api/workspaces/save", [this](const auto& r, auto& s) { handleWorkspaceSave(r, s); });
+  srv_.Post("/api/workspaces/remove", [this](const auto& r, auto& s) { handleWorkspaceRemove(r, s); });
   srv_.Post("/api/projects/rename", [this](const auto& r, auto& s) { handleProjectRename(r, s); });
   srv_.Post("/api/projects/apply", [this](const auto& r, auto& s) { handleProjectApply(r, s); });
   srv_.Post("/api/projects/ai-organize", [this](const auto& r, auto& s) { handleAiOrganize(r, s); });

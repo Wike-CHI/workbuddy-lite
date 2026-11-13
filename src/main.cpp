@@ -483,12 +483,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
   std::wstring title = L"WorkBuddy Lite";
   {
-    size_t end = activeCwd.find_last_not_of("\\/");
-    size_t pos = end == std::string::npos ? std::string::npos : activeCwd.find_last_of("\\/", end);
-    std::string leaf = end == std::string::npos ? ""
-                       : (pos == std::string::npos ? activeCwd.substr(0, end + 1)
-                                                   : activeCwd.substr(pos + 1, end - pos));
-    if (!leaf.empty()) title += L" · " + wbl::utf8ToWide(leaf);
+    std::string wsName = backend.workspaceName();
+    if (!wsName.empty()) title += L" · " + wbl::utf8ToWide(wsName);
   }
   HWND hwnd = CreateWindowExW(0, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                               1280, 860, nullptr, nullptr, hInst, nullptr);

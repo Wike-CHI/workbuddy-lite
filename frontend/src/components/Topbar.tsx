@@ -20,6 +20,8 @@ const MODES = [
 export function Topbar() {
   const demo = useChatStore((s) => s.demo)
   const cwd = useChatStore((s) => s.cwd)
+  const workspaceName = useChatStore((s) => s.workspaceName)
+  const workspaceFolders = useChatStore((s) => s.workspaceFolders)
   const activeTitle = useChatStore((s) => s.activeTitle)
   const model = useChatStore((s) => s.model)
   const models = useChatStore((s) => s.models)
@@ -52,11 +54,14 @@ export function Topbar() {
             id="cwd-chip"
             type="button"
             onClick={() => setWorkspaceOpen(true)}
-            title={`工作空间：${cwd || '—'}（点击切换或新窗口打开）`}
+            title={`工作空间：${workspaceName || '—'}${workspaceFolders.length > 1 ? `（${workspaceFolders.length} 个文件夹）` : ''}\n${cwd || '—'}\n点击切换、编辑或新窗口打开`}
             className="inline-flex max-w-[420px] items-center gap-1 truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
           >
             <FolderGit2 className="size-3 shrink-0" />
-            <span className="truncate">{cwd || '—'}</span>
+            <span className="truncate">{workspaceName || cwd || '—'}</span>
+            {workspaceFolders.length > 1 && (
+              <span className="shrink-0 rounded bg-background/70 px-1 text-[9.5px]">{workspaceFolders.length}</span>
+            )}
             <ChevronDown className="size-2.5 shrink-0 opacity-60" />
           </button>
           {demo && (

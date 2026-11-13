@@ -7,6 +7,7 @@ import type {
   SessionDetail,
   UsageSummary,
   Workspace,
+  WorkspaceRecord,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,11 +57,25 @@ export const api = {
     post<{ ok: boolean; applied: boolean; model: string; error?: string }>('/api/model', { model, sessionId }),
   usage: () => request<UsageSummary>('/api/usage'),
   workspaces: () =>
-    request<{ cwd: string; workspace: string; agentReady: boolean; demo: boolean; workspaces: Workspace[] }>(
-      '/api/workspaces',
+    request<{
+      cwd: string
+      workspace: string
+      workspaceId?: string
+      workspaceName?: string
+      workspaceFolders?: string[]
+      agentReady: boolean
+      demo: boolean
+      workspaces: Workspace[]
+    }>('/api/workspaces'),
+  useWorkspace: (payload: { path?: string; id?: string }) =>
+    post<{ ok: boolean; cwd: string; workspace: string; id?: string; folders?: string[]; error?: string }>(
+      '/api/workspaces/use',
+      payload,
     ),
-  useWorkspace: (path: string) =>
-    post<{ ok: boolean; cwd: string; workspace: string; error?: string }>('/api/workspaces/use', { path }),
+  saveWorkspace: (payload: { id?: string; name: string; folders: string[] }) =>
+    post<{ ok: boolean; workspace?: WorkspaceRecord; error?: string }>('/api/workspaces/save', payload),
+  removeWorkspace: (id: string) =>
+    post<{ ok: boolean; error?: string }>('/api/workspaces/remove', { id }),
   openWorkspace: (path: string) =>
     post<{ ok: boolean; path: string; error?: string }>('/api/workspaces/open', { path }),
   pickWorkspace: () => post<{ path: string }>('/api/workspaces/pick', {}),

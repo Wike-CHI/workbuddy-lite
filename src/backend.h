@@ -27,6 +27,7 @@ class Backend {
   std::string url() const { return "http://127.0.0.1:" + std::to_string(port_) + "/"; }
   std::string statusText() const;
   std::string currentWorkspace() const { return currentCwd(); }
+  std::string workspaceName() const;
 
  private:
   void setupRoutes();
@@ -68,6 +69,14 @@ class Backend {
   std::string pickFolder();
   json agentGet(const std::string& path);
 
+  // 多文件夹工作空间：一个名字 + 最多 5 个文件夹，cwd 取第一个
+  json findWorkspace(const std::string& id);
+  json workspaceByFolder(const std::string& path);
+  void activateWorkspace(const json& ws, bool persist, const std::string& preferredCwd = "");
+  void resolveInitialWorkspace();
+  json activeWorkspaceInfo() const;
+  json renameWorkspaceByFolder(const std::string& path, const std::string& name);
+
   // 图片落盘：事件里只存 URL，避免 base64 把 sessions.json 撑爆
   json saveImages(const json& incoming);
 
@@ -94,6 +103,8 @@ class Backend {
   void handleWorkspaceUse(const httplib::Request&, httplib::Response&);
   void handleWorkspacePick(const httplib::Request&, httplib::Response&);
   void handleWorkspaceCreate(const httplib::Request&, httplib::Response&);
+  void handleWorkspaceSave(const httplib::Request&, httplib::Response&);
+  void handleWorkspaceRemove(const httplib::Request&, httplib::Response&);
   void handleProjectRename(const httplib::Request&, httplib::Response&);
   void handleProjectApply(const httplib::Request&, httplib::Response&);
   void handleAiOrganize(const httplib::Request&, httplib::Response&);
@@ -144,6 +155,10 @@ class Backend {
   mutable std::mutex wsCacheMu_;
   json wsCache_ = json::array();
   int64_t wsCacheAt_ = 0;
+
+  // 当前工作空间：{id, name, folders[]}
+  mutable std::mutex wsMu_;
+  json activeWorkspace_ = json::object();
 };
 
 }  // namespace wbl

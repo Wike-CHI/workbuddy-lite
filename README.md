@@ -15,7 +15,9 @@
 - **工作空间读取**：合并 CodeBuddy 的最近工作空间（`/api/v1/sessions/workspaces`）、
   `~/.codebuddy/projects` 与 `~/.workbuddy/projects` 里的历史项目（扫描 session jsonl 的 cwd）、
   本地会话目录、当前目录子目录和自建项目（`projects.json`）；支持筛选、系统目录选择器、
-  当前窗口切换、独立新窗口打开，也能直接**新建空白工作空间**并记住上次选择。
+  当前窗口切换、独立新窗口打开。
+- **多文件夹工作空间**：自建工作空间是「名字 + 最多 5 个文件夹」，可改名、加/减文件夹、删除分组；
+  cwd 取第一个文件夹，其余目录写进 prompt 交给模型按绝对路径访问，并记住上次选择。
 - **多窗口 / 项目分组**：侧栏按 cwd 把会话分到项目组，当前项目展开；项目组可直接新建会话或
   新窗口打开。每个窗口一个进程、一个 ACP 会话；WebView2 数据目录按 PID 隔离，
   `sessions.json` 用命名互斥锁串行化并做跨进程合并，后写的窗口不会覆盖先写的会话。
@@ -97,10 +99,14 @@ bin\workbuddy-lite.exe --cwd D:\repo --new-window  :: 新窗口不续接上次�
 
 界面里的「工作空间」可以从最近项目、当前目录子目录或系统目录选择器里挑；
 「切换」改本窗口后续会话的 cwd，「新窗口」会再起一个 `workbuddy-lite.exe`。
-面板底部还能直接**新建空白工作空间**（默认建在 `%USERPROFILE%\WorkBuddy\<名字>`，可以改父目录），
-建完自动切过去，并记进 `projects.json`，所以下次启动会回到这个工作空间，列表里也还找得到。
-「切换」和「新建」都会把选择写进 `settings.json` 的 `lastWorkspace`；没有选择记录时，
-启动会跟随最近一次会话所在目录，而不是 exe 所在目录。
+
+工作空间是**一个名字 + 最多 5 个文件夹**（存在 `workspaces.json`）：面板里「新建 / 编辑」可以改名、
+加文件夹（系统选择器自带「新建文件夹」）、移除文件夹，删除只删分组不删目录。
+cwd 取第一个文件夹，其余文件夹会写进 prompt，让模型知道还能按绝对路径访问；
+`/api/file` 也放开到整个工作空间。
+
+「切换」「新建」「保存」都会把选择写进 `settings.json` 的 `lastWorkspace` / `lastWorkspaceId`；
+没有选择记录时，启动会跟随最近一次会话所在目录，而不是 exe 所在目录。
 同一台机器上多开时，`sessions.json` 会做跨进程合并，但侧栏只显示当前 cwd 的会话。
 
 设置 `WORKBUDDY_LITE_DATA` 可以把会话/图片指到别的目录，方便测试或多套环境隔离：
@@ -209,6 +215,13 @@ ACP 的 `session/new` 结果里同时带 `models.availableModels`（含 `_meta.c
 工作空间面板都扫盘。换目录用 `session/new` 的 `cwd`，不需要重启后端；新窗口是另一个进程，
 `--new-window` 让它不续接上一个会话。
 
+**一个工作空间可以有 5 个文件夹，但 ACP 只有一个 cwd。** 自建工作空间存在
+`workspaces.json`（`{id, name, folders[]}`），切过去时 cwd 取 `folders[0]`；
+多个文件夹时，prompt 前面会加一段「本工作空间还包含这些目录」的说明，模型需要时按绝对路径访问，
+`/api/file` 的越界检查也从「cwd 之内」放宽到「任一文件夹之内」。
+同一主文件夹不允许出现在两个工作空间里，避免列表出现两条一样的；改名会同步写回
+`projects.json`，侧栏分组标题跟着变。
+
 **图标走 .ico 资源，GDI+ 只做兜底。** `src/app.rc` 把 `src/app.ico` 链接进 exe，资源管理器、
 任务栏、托盘、Alt+Tab 都读同一套 16–256 图标；窗口和托运用 `LoadImageW` 取资源，资源缺失时
 才用 GDI+ 画蓝色 W。任务栏图标通过 `WM_SETICON` + 进程 AUMID 设置，托盘用
@@ -244,6 +257,7 @@ prompt 里再以 `{type:image, mimeType, data}` 传给模型，文字放在图�
 ## 边界
 
 - 单窗口单工作空间：侧栏只显示当前 cwd 的会话，换工作空间请用「切换」或「新窗口」。
+- 工作空间的 cwd 只有第一个文件夹：其余文件夹靠 prompt 说明 + 绝对路径访问，工具仍以 cwd 为基准。
 - 单会话串行：一次只跑一个 prompt，`/api/cancel` 走 `session/cancel`。
 - 积分/额度来自 `usage_update`，**发过一轮对话之后才有数据**；`quota.percent` 是
   CodeBuddy 返回的共享预算百分比，本应用只展示不修改。

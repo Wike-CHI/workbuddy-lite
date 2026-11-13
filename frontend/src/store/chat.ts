@@ -112,6 +112,9 @@ interface ChatState {
   catalog: Catalog
   commands: AcpCommand[]
   workspaces: Workspace[]
+  workspaceId: string
+  workspaceName: string
+  workspaceFolders: string[]
   attachments: Attachment[]
   connectorRefs: string[]
   history: string[]
@@ -133,6 +136,10 @@ interface ChatState {
   loadCatalog: () => Promise<void>
   loadWorkspaces: () => Promise<void>
   useWorkspace: (path: string) => Promise<boolean>
+  useWorkspaceById: (id: string) => Promise<boolean>
+  applyWorkspace: (payload: { path?: string; id?: string }) => Promise<boolean>
+  saveWorkspace: (payload: { id?: string; name: string; folders: string[] }) => Promise<string>
+  removeWorkspace: (id: string) => Promise<boolean>
   openWorkspace: (path: string) => Promise<void>
   pickWorkspace: () => Promise<string>
   createWorkspace: (name: string, parent?: string) => Promise<string>
@@ -177,6 +184,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   catalog: EMPTY_CATALOG,
   commands: [],
   workspaces: [],
+  workspaceId: '',
+  workspaceName: '',
+  workspaceFolders: [],
   attachments: [],
   connectorRefs: [],
   history: [],
@@ -192,6 +202,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           demo: boot.demo,
           cwd: boot.cwd,
           workspace: boot.workspace,
+          workspaceId: boot.workspaceId || '',
+          workspaceName: boot.workspaceName || boot.workspace,
+          workspaceFolders: boot.workspaceFolders || [],
           agentReady: boot.agentReady,
           agentError: boot.agentError,
           status: boot.status,
@@ -352,6 +365,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({
         sessions: boot.sessions,
         projectNames: boot.projectNames || get().projectNames,
+        cwd: boot.cwd || get().cwd,
+        workspace: boot.workspace || get().workspace,
+        workspaceId: boot.workspaceId || '',
+        workspaceName: boot.workspaceName || boot.workspace || get().workspaceName,
+        workspaceFolders: boot.workspaceFolders || [],
         quota: boot.quota,
         credits: boot.credits,
         charged: boot.charged,
@@ -486,14 +504,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
-  useWorkspace: async (path) => {
+  applyWorkspace: async (payload) => {
     try {
-      const res = await api.useWorkspace(path)
+      const res = await api.useWorkspace(payload)
       if (!res.ok) {
         toast.error(res.error || '切换失败')
         return false
       }
-      set({ cwd: res.cwd, workspace: res.workspace })
+      set({
+        cwd: res.cwd,
+        workspace: res.workspace,
+        workspaceId: res.id || '',
+        workspaceName: res.workspace,
+        workspaceFolders: res.folders || [],
+      })
       get().newSession()
       void get().refreshSessions()
       void get().loadWorkspaces()
@@ -503,6 +527,43 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       return true
     } catch (error) {
       toast.error('切换失败：' + (error instanceof Error ? error.message : String(error)))
+      return false
+    }
+  },
+
+  useWorkspace: (path) => get().applyWorkspace({ path }),
+  useWorkspaceById: (id) => get().applyWorkspace({ id }),
+
+  saveWorkspace: async (payload) => {
+    try {
+      const res = await api.saveWorkspace(payload)
+      if (!res.ok || !res.workspace) {
+        toast.error(res.error || '保存失败')
+        return ''
+      }
+      await get().refreshSessions()
+      void get().loadWorkspaces()
+      toast.success('已保存「' + res.workspace.name + '」')
+      return res.workspace.id
+    } catch (error) {
+      toast.error('保存失败：' + (error instanceof Error ? error.message : String(error)))
+      return ''
+    }
+  },
+
+  removeWorkspace: async (id) => {
+    try {
+      const res = await api.removeWorkspace(id)
+      if (!res.ok) {
+        toast.error(res.error || '删除失败')
+        return false
+      }
+      await get().refreshSessions()
+      void get().loadWorkspaces()
+      toast.success('已删除工作空间（文件夹本身没动）')
+      return true
+    } catch (error) {
+      toast.error('删除失败：' + (error instanceof Error ? error.message : String(error)))
       return false
     }
   },

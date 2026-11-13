@@ -67,16 +67,30 @@ export interface UsageSummary {
 }
 
 export interface Workspace {
+  id?: string
   path: string
   label: string
   source: string
   current?: boolean
+  active?: boolean
+  folders?: string[]
+}
+
+export interface WorkspaceRecord {
+  id: string
+  name: string
+  folders: string[]
+  createdAt?: number
+  updatedAt?: number
 }
 
 export interface Bootstrap {
   demo: boolean
   cwd: string
   workspace: string
+  workspaceId?: string
+  workspaceName?: string
+  workspaceFolders?: string[]
   fresh: boolean
   port: number
   agentReady: boolean
