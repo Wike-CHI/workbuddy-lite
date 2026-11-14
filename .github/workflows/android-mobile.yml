@@ -3,7 +3,7 @@ on:
   pull_request:
     paths: ['apps/mobile/**', 'packages/**', '.github/workflows/android-mobile.yml']
   push:
-    branches: ['main', 'feat/android-rn-foundation']
+    branches: ['main']
     paths: ['apps/mobile/**', 'packages/**', '.github/workflows/android-mobile.yml']
 permissions:
   contents: read
@@ -22,7 +22,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Use runner Android command-line tools
+        run: |
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+      - name: Accept SDK licenses
+        run: printf 'y\n%.0s' {1..100} | sdkmanager --licenses >/dev/null
       - run: npm ci --no-audit --no-fund
         working-directory: apps/mobile
       - run: npm run typecheck && npm run lint && npm test -- --runInBand
