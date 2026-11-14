@@ -3,12 +3,14 @@ on:
   pull_request:
     paths:
       - 'scripts/android/**'
+      - 'packages/**'
       - 'docs/android-p0.md'
       - '.github/workflows/android-p0.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/android/**'
+      - 'packages/**'
       - '.github/workflows/android-p0.yml'
 permissions:
   contents: read
@@ -25,4 +27,4 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: bash -n scripts/android/bootstrap.sh
       - run: shellcheck scripts/android/bootstrap.sh
-      - run: node --test scripts/android/tests/*.test.mjs
+      - run: node --test scripts/android/tests/*.test.mjs packages/termux-bridge/tests/*.test.mjs

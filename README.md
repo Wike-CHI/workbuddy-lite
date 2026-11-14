@@ -5,9 +5,9 @@
 
 只做三件事：把话递给 CodeBuddy、把工具调用画清楚、把权限交回你手里。
 
-## Android 定制（P0 工具）
+## Android 定制（开发预览）
 
-安卓端计划采用 React Native + Termux 本地 CodeBuddy CLI。首批已加入安装、诊断与 ACP 冒烟工具，使用方法和真机验收清单见 [Android P0 指南](docs/android-p0.md)，总体计划见 [#2](https://github.com/Wike-CHI/workbuddy-lite/issues/2)。当前尚未提供安卓 APK，也尚未完成真机兼容验证。
+安卓端采用 React Native + Termux 本地 CodeBuddy CLI。已加入原生客户端、Termux 安装/登录入口、本地 bridge 与会话恢复；使用方法见 [Android 客户端指南](docs/android-mobile.md)，底层验证见 [P0 指南](docs/android-p0.md)，总体计划见 [#2](https://github.com/Wike-CHI/workbuddy-lite/issues/2)。当前为开发预览，真实手机的完整兼容性仍待验收。
 
 ## 能力
 
