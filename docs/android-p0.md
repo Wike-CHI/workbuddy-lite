@@ -1,6 +1,6 @@
 # Android P0：Termux 安装、登录与 ACP 验证
 
-对应 [Android 实施计划 #2](https://github.com/Wike-CHI/workbuddy-lite/issues/2)。本次交付是首批 P0 工具，尚未包含 React Native APK、RUN_COMMAND 原生模块或后台常驻服务。
+对应 [Android 实施计划 #2](https://github.com/Wike-CHI/workbuddy-lite/issues/2)。本文仅覆盖 P0 工具；React Native APK 与 Termux 集成见 [Android 客户端指南](android-mobile.md)。
 
 目标运行方式为 **React Native → Termux Node bridge → CodeBuddy CLI**。这些脚本先验证最底层的 CLI/ACP 能否在手机本地工作，后续 bridge 可沿用协议经验，但不将冒烟客户端直接视为生产实现。
 
@@ -15,10 +15,12 @@ git clone https://github.com/Wike-CHI/workbuddy-lite.git
 cd workbuddy-lite
 ```
 
-PR 合并前，需要切换到本 PR 的分支才能获取脚本：
+若此前使用旧开发分支，现在统一更新到 main：
 
 ```bash
-git switch feat/android-p0-termux
+git fetch origin
+git switch main
+git pull --ff-only
 ```
 
 脚本使用 Node 22+ 内置 API，无需安装本项目的 Web 前端依赖。CodeBuddy 自身的 Node 要求按所选版本的 npm `engines` 校验；Node 22 是探针基线，不能代表所有 CLI 版本都适配。
