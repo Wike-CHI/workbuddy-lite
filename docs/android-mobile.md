@@ -12,15 +12,15 @@ bridge 与 CLI 分别监听随机本地端口。CLI 保持自身鉴权与请求�
 
 ## 手机首次配置
 
-1. 安装标准 `com.termux` 包的 Termux 并打开一次。在 Termux 中安装 Git、Node 22.13+（推荐当前 LTS），克隆本分支到 HOME 下：
+1. 安装标准 `com.termux` 包的 Termux 并打开一次。在 Termux 中安装 Git、Node 22.13+（推荐当前 LTS），克隆 main 分支到 HOME 下：
 
    ```bash
    pkg update
    pkg install -y git nodejs-lts
-   git clone -b feat/android-rn-foundation https://github.com/Wike-CHI/workbuddy-lite.git
+   git clone --branch main https://github.com/Wike-CHI/workbuddy-lite.git
    ```
 
-   已克隆时在原仓库执行 `git fetch origin`，再切换本分支。此版本默认工作区为 `~/WorkBuddy/mobile`。
+   已克隆时在原仓库执行 `git fetch origin`，再执行 `git switch main` 和 `git pull --ff-only`。此版本默认工作区为 `~/WorkBuddy/mobile`。
 
 2. 在 `~/.termux/termux.properties` 设置 `allow-external-apps=true`，保留文件中其他配置。Termux 的配置和系统授权需要用户在设备上完成，APK 不会越过系统权限修改另一个 App 的私有文件。
 
@@ -29,6 +29,8 @@ bridge 与 CLI 分别监听随机本地端口。CLI 保持自身鉴权与请求�
 4. 填写 Termux 中的仓库绝对路径和要安装的 CodeBuddy 精确版本。版本先在 Termux 中用 `npm view @tencent-ai/codebuddy-code version engines --json` 核实。点击“安装 CLI”，在终端等待完成；点击“登录账户”，完成官方浏览器授权并退出该交互会话后返回。
 
 5. 点击“启动并安全配对”。等待 CLI 就绪，再进入“Agent 会话”创建会话、发送任务，按权限卡片选择允许或拒绝。服务已启动后才登录的，先停止服务再重新启动，以重新检查 CLI 状态。
+
+v0.1.1 修正了旧开发分支提示；从系统设置或 Termux 返回时自动刷新权限检测，并保留尚未保存的仓库路径和版本输入。可直接覆盖安装同签名旧预览包。
 
 “查看界面演示”使用本地示例数据，不会启动 CLI 或执行任务。初次版本的 `RUN_COMMAND`、私有 PendingIntent、Keystore 和浏览器回调均需真机验收；编译成功不能代替设备测试。
 

@@ -17,6 +17,8 @@ import { BridgeApi } from './src/api';
 import type { Summary } from './src/api';
 import { termux } from './src/native';
 import type { Environment } from './src/native';
+import { repositorySetup } from './src/setup';
+import { version as appVersion } from './package.json';
 
 function Button({
   label,
@@ -40,9 +42,17 @@ function Button({
   );
 }
 function describe(error: unknown) {
-  const code = error instanceof Error ? error.message : '';
+  const nativeCode = (error as {code?: unknown} | null)?.code;
+  const code = typeof nativeCode === 'string' ? nativeCode : error instanceof Error ? error.message : '';
   const known: Record<string, string> = {
     UNAUTHORIZED: '配对失效，请重新启动并配对。',
+    PERMISSION_REQUIRED: '尚未取得系统的 Termux 命令权限，请在本 App 的附加权限中开启，返回后会自动刷新。',
+    INVALID_SETTINGS: '仓库路径或 CLI 版本格式不正确。路径需在 Termux HOME 内，版本只填写数字版本号。',
+    TERMUX_MISSING: '未检测到 Termux，请先安装并打开一次。',
+    TERMUX_START_FAILED: '无法启动 Termux 操作，请核对仓库路径、CLI 版本及命令权限。',
+    TERMUX_COMMAND_FAILED: 'Termux 命令未完成，请打开终端检查环境和登录状态。',
+    TERMUX_TIMEOUT: 'Termux 未返回结果，请打开终端检查 allow-external-apps 配置和进程。',
+    PAIRING_LOST: '配对信息无法解密，请重新启动并配对。',
     AGENT_BUSY: '另一个任务正在运行。',
     AGENT_UNAVAILABLE: 'CLI 暂不可用，请检查登录后重启服务。',
     PAIRING_EXPIRED: '服务已重启，请重新配对。',
@@ -78,21 +88,31 @@ function Mobile() {
     AppState.currentState === 'active',
   );
   const attempt = useRef<{ text: string; id: string } | null>(null);
-  async function refresh() {
-    const [environment, config] = await Promise.all([
-      termux.status(),
-      termux.pairing(),
-    ]);
-    setEnv(environment);
+  const refreshGeneration = useRef(0);
+  const settingsLoaded = useRef(false);
+  async function refresh(loadSettings = false) {
+    const generation = ++refreshGeneration.current;
+    const environment = await termux.status();
+    if (generation !== refreshGeneration.current) return;
+    const restoreSettings = loadSettings || !settingsLoaded.current;
+    settingsLoaded.current = true;
+    setEnv(current => restoreSettings ? environment : {
+      ...current,
+      installed: environment.installed,
+      permission: environment.permission,
+    });
+    const config = await termux.pairing();
+    if (generation !== refreshGeneration.current) return;
     setApi(config ? new BridgeApi(config) : null);
   }
   const guard = (promise: Promise<unknown>) =>
     promise.catch(e => setError(describe(e)));
   useEffect(() => {
-    guard(refresh());
-    const listener = AppState.addEventListener('change', state =>
-      setForeground(state === 'active'),
-    );
+    guard(refresh(true));
+    const listener = AppState.addEventListener('change', state => {
+      setForeground(state === 'active');
+      if (state === 'active') guard(refresh());
+    });
     return () => listener.remove();
   }, []);
   useEffect(() => {
@@ -267,12 +287,10 @@ function Mobile() {
               {env.installed ? '已检测到 Termux' : '需要安装 Termux'}
             </Text>
             <Text style={s.muted}>
-              首次需在 Termux 克隆仓库，并设置 allow-external-apps=true。
+              首次请克隆 main 分支，并在 Termux 设置 allow-external-apps=true。已有仓库可跳过克隆，以下为初始化命令。
             </Text>
-            <Text selectable style={s.code}>
-              pkg install git nodejs-lts{'\n'}git clone -b
-              feat/android-rn-foundation
-              https://github.com/Wike-CHI/workbuddy-lite.git
+            <Text testID="repository-setup" selectable style={s.code}>
+              {repositorySetup}
             </Text>
             <Text style={s.muted}>
               {env.permission
@@ -294,7 +312,7 @@ function Mobile() {
             accessibilityLabel="仓库路径"
             style={s.input}
             value={env.repo}
-            onChangeText={repo => setEnv({ ...env, repo })}
+            onChangeText={repo => setEnv(current => ({ ...current, repo }))}
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -305,7 +323,7 @@ function Mobile() {
             placeholder="填写实际版本，如 x.y.z"
             placeholderTextColor="#728198"
             value={env.version}
-            onChangeText={version => setEnv({ ...env, version })}
+            onChangeText={version => setEnv(current => ({ ...current, version }))}
             autoCapitalize="none"
           />
           <View style={s.row}>
@@ -352,7 +370,7 @@ function Mobile() {
           </View>
           <Button label="查看界面演示" onPress={showDemo} />
           <Text style={s.footnote}>
-            P1 开发预览 · 工作目录：Termux HOME/WorkBuddy/mobile。后台运行受
+            开发预览 v{appVersion} · 工作目录：Termux HOME/WorkBuddy/mobile。后台运行受
             Android 限制，真机兼容性仍待验收。
           </Text>
         </ScrollView>
