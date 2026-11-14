@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { request as httpRequest } from 'node:http';
 import { SessionStore } from '../store.mjs';
 import { createBridge, compactUpdate } from '../server.mjs';
 import { emptySession, applyEvent, eventNeedsSnapshot } from '../../core/index.js';
@@ -30,7 +31,7 @@ async function fixture(t, saved = []) {
     const response = await fetch(base + path, { method: data === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer private-token', ...extra }, body: data === undefined ? undefined : JSON.stringify(data) });
     return { status: response.status, ...await response.json() };
   }
-  return { request, bridge, handlers, prompts, notifications, store, get loads() { return loads; } };
+  return { request, base, bridge, handlers, prompts, notifications, store, get loads() { return loads; } };
 }
 
 test('bridge requires token, rejects browser origins, and resyncs stale cursors', async t => {
@@ -51,6 +52,39 @@ test('prompt idempotency survives lost responses and serializes concurrent work'
   assert.equal((await request('/v1/sessions', {})).status, 409);
   assert.equal((await request(`/v1/sessions/${session.id}/model`, {model: 'model-a'})).status, 409);
   prompts[0].resolve({ stopReason: 'end_turn' });
+});
+
+test('slow duplicate request reads the latest acceptance ledger after its body arrives', async t => {
+  const setup = await fixture(t);
+  const {session} = await setup.request('/v1/sessions', {});
+  const payload = {requestId: 'slow-duplicate-001', text: '安卓任务'};
+  const bytes = Buffer.from(JSON.stringify(payload));
+  let accept;
+  const continued = new Promise(resolve => { accept = resolve; });
+  let finish;
+  const response = new Promise(resolve => { finish = resolve; });
+  const slow = httpRequest(`${setup.base}/v1/sessions/${session.id}/prompt`, {
+    method: 'POST', headers: {Authorization: 'Bearer private-token', Expect: '100-continue', 'Content-Length': bytes.length},
+  }, res => {
+    let body = ''; res.on('data', chunk => { body += chunk; }); res.on('end', () => finish(JSON.parse(body)));
+  });
+  slow.on('continue', accept); slow.flushHeaders();
+  await continued;
+  slow.write(bytes.subarray(0, 10));
+  await setup.request(`/v1/sessions/${session.id}/prompt`, payload);
+  setup.prompts[0].resolve({stopReason: 'end_turn'});
+  // Ensure the original task is finished, so a stale ledger would execute it twice.
+  while ((await setup.request(`/v1/sessions/${session.id}`)).session.running) await new Promise(resolve => setImmediate(resolve));
+  slow.end(bytes.subarray(10));
+  assert.equal((await response).duplicate, true);
+  assert.equal(setup.prompts.length, 1);
+});
+
+test('rejects malformed request shapes rather than treating them as agent errors', async t => {
+  const {request} = await fixture(t);
+  const {session} = await request('/v1/sessions', {});
+  assert.equal((await request(`/v1/sessions/${session.id}/prompt`, null)).status, 400);
+  assert.equal((await request(`/v1/sessions/${session.id}/prompt`, [])).status, 400);
 });
 
 test('permission response validates session and option; cancellation reaches ACP once', async t => {
