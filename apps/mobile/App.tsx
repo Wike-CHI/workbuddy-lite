@@ -46,7 +46,12 @@ function describe(error: unknown) {
   const code = typeof nativeCode === 'string' ? nativeCode : error instanceof Error ? error.message : '';
   const known: Record<string, string> = {
     UNAUTHORIZED: '配对失效，请重新启动并配对。',
-    PERMISSION_REQUIRED: '尚未取得系统的 Termux 命令权限，请在本 App 的附加权限中开启，返回后会自动刷新。',
+    PERMISSION_REQUIRED: '尚未取得系统的 Termux 命令权限，请先点“申请 Termux 命令权限”。',
+    PERMISSION_REQUEST_FAILED: '系统未打开授权窗口，请进入系统权限设置检查。',
+    PERMISSION_REQUEST_BUSY: '系统权限申请正在进行，请完成当前授权。',
+    PERMISSION_CANCELLED: '权限申请已取消，请在前台重新申请。',
+    TERMUX_PERMISSION_UNAVAILABLE: '当前 Termux 未注册可申请的 RUN_COMMAND 权限，请检查 Termux 安装版本。',
+    NO_ACTIVITY: '请在前台打开 App 后再申请权限。',
     INVALID_SETTINGS: '仓库路径或 CLI 版本格式不正确。路径需在 Termux HOME 内，版本只填写数字版本号。',
     TERMUX_MISSING: '未检测到 Termux，请先安装并打开一次。',
     TERMUX_START_FAILED: '无法启动 Termux 操作，请核对仓库路径、CLI 版本及命令权限。',
@@ -180,10 +185,29 @@ function Mobile() {
       clearTimeout(timer);
     };
   }, [api, active, foreground, demo]);
+  async function ensurePermission() {
+    const granted = await termux.requestPermission();
+    refreshGeneration.current++;
+    setEnv(current => ({...current, permission: granted}));
+    if (!granted) {
+      setError('系统尚未授予 Termux 命令权限。若没有弹出授权框或此前选择不再询问，请点“打开系统权限设置”。');
+      return false;
+    }
+    setError('');
+    return true;
+  }
+  async function authorize() {
+    setBusy(true);
+    setError('');
+    try { if (await ensurePermission()) setNotice('Termux 命令权限已授予，可以继续安装或登录。'); }
+    catch (e) { setError(describe(e)); }
+    finally { setBusy(false); }
+  }
   async function action(name: string) {
     setBusy(true);
     setError('');
     try {
+      if (!await ensurePermission()) return;
       await termux.saveSettings(env.repo, env.version);
       const result = await termux.launch(name, env.repo, env.version);
       if (result.launched) setNotice('已打开 Termux，请在终端完成操作后返回。');
@@ -298,7 +322,13 @@ function Mobile() {
                 : '尚未授予在 Termux 环境运行命令的权限'}
             </Text>
             <Button
-              label="打开权限设置"
+              label={env.permission ? 'Termux 命令权限已授予' : '申请 Termux 命令权限'}
+              disabled={busy || env.permission || !env.installed}
+              onPress={() => authorize()}
+            />
+            <Text style={s.muted}>点击申请后，在系统弹窗中允许“在 Termux 环境运行命令”。此权限与悬浮窗、存储权限分别授权。</Text>
+            <Button
+              label="打开系统权限设置"
               onPress={() => guard(termux.openSettings())}
             />
             <Button
