@@ -44,7 +44,7 @@ cd android
 ./gradlew testReleaseUnitTest assembleRelease -PreactNativeArchitectures=arm64-v8a
 ```
 
-需要 JDK 17、Android SDK 37 / Build Tools 37 和 NDK 27.1。`release` 预览包内嵌 JS，不依赖 Metro，当前使用模板公开 debug keystore 签名，仅供开发验收，不作为正式发布签名。CI 将产物上传为 `workbuddy-mobile-arm64-preview` artifact。
+此版本 compile 37 / target 36；SDK Manager 的平台包名称为 `platforms;android-37.0`。需要 JDK 17、Android SDK 37.0 / Build Tools 37 和 NDK 27.1。`release` 预览包内嵌 JS，不依赖 Metro，当前使用模板公开 debug keystore 签名，仅供开发验收，不作为正式发布签名。CI 将产物上传为 `workbuddy-mobile-arm64-preview` artifact。
 
 开发调试可用 `npm start` 和 `npm run android`；手机通过 USB `adb reverse tcp:8081 tcp:8081` 连接 Metro，明文网络配置仅放行 localhost/127.0.0.1，不为任意局域网域名放行。
 

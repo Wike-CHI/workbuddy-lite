@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SessionStore } from '../store.mjs';
-import { createBridge } from '../server.mjs';
+import { createBridge, compactUpdate } from '../server.mjs';
 import { emptySession, applyEvent, eventNeedsSnapshot } from '../../core/index.js';
 
 async function fixture(t, saved = []) {
   const store = new SessionStore(':memory:');
   for (const session of saved) store.put(session);
-  let handlers, count = 0, prompts = [], loads = 0;
+  let handlers, count = 0, prompts = [], loads = 0; const notifications = [];
   const bridge = createBridge({ token: 'private-token', cwd: '/tmp/isolated', store,
     createClient(options) {
       handlers = options;
-      return { connect: async () => {}, close: async () => {}, notify: async () => {},
+      return { connect: async () => {}, close: async () => {}, notify: async (method, params) => { notifications.push({ method, params }); },
         rpc: async (method, params) => {
           if (method === 'session/new') return { sessionId: `acp-${++count}`, models: { availableModels: [{ modelId: 'model-a', name: 'A' }] } };
           if (method === 'session/load') { loads++; handlers.onUpdate({ sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { text: 'replayed history' } } }); return {}; }
@@ -30,7 +30,7 @@ async function fixture(t, saved = []) {
     const response = await fetch(base + path, { method: data === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer private-token', ...extra }, body: data === undefined ? undefined : JSON.stringify(data) });
     return { status: response.status, ...await response.json() };
   }
-  return { request, bridge, handlers, prompts, store, get loads() { return loads; } };
+  return { request, bridge, handlers, prompts, notifications, store, get loads() { return loads; } };
 }
 
 test('bridge requires token, rejects browser origins, and resyncs stale cursors', async t => {
@@ -54,7 +54,7 @@ test('prompt idempotency survives lost responses and serializes concurrent work'
 });
 
 test('permission response validates session and option; cancellation reaches ACP once', async t => {
-  const { request, prompts, handlers } = await fixture(t);
+  const { request, prompts, handlers, notifications } = await fixture(t);
   const first = (await request('/v1/sessions', {})).session;
   const second = (await request('/v1/sessions', {})).session;
   await request(`/v1/sessions/${first.id}/prompt`, {requestId: 'permission-test-001', text: 'read file'});
@@ -65,7 +65,17 @@ test('permission response validates session and option; cancellation reaches ACP
   assert.equal((await request(`/v1/sessions/${first.id}/permission`, {id, optionId: 'invented'})).status, 400);
   assert.equal((await request(`/v1/sessions/${first.id}/permission`, {id, optionId: 'allow'})).status, 200);
   assert.equal(await pending, 'allow');
+  assert.equal((await request(`/v1/sessions/${first.id}/cancel`, {})).status, 202);
+  assert.deepEqual(notifications, [{method: 'session/cancel', params: {sessionId: first.acpId}}]);
+  assert.equal((await request(`/v1/sessions/${first.id}`)).session.running, true);
   prompts[0].resolve({stopReason: 'end_turn'});
+});
+
+test('tool event journal excludes unbounded raw tool payloads and private metadata', () => {
+  const update = compactUpdate({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Shell', rawInput: 'x'.repeat(1000000), _meta: { secret: 'private' } });
+  assert.ok(JSON.stringify(update).length < 1000);
+  assert.ok(!JSON.stringify(update).includes('private'));
+  assert.equal(compactUpdate({sessionUpdate: 'unknown'}), null);
 });
 
 test('restart marks running sessions interrupted and never replays their prompt', async t => {

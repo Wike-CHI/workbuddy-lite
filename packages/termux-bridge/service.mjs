@@ -57,7 +57,7 @@ async function serve() {
       cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CODEBUDDY_DISABLE_AUTOUPDATE: '1' },
     });
     cli.on('error', () => { cliFailed = true; });
-    cli.on('exit', () => { cliFailed = true; if (bridge) void stop().finally(() => process.exit(1)); });
+    cli.on('exit', () => { cliFailed = true; if (bridge && !stopped) void stop().finally(() => process.exit(1)); });
     cli.stdout.on('data', () => {}); cli.stderr.on('data', () => {});
     const config = { port: 0, token: randomBytes(32).toString('hex'), instance: randomUUID(), pid: process.pid };
     const store = new SessionStore(join(directory, 'sessions.sqlite'));

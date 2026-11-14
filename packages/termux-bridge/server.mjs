@@ -3,6 +3,23 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { emptySession, applyEvent, eventNeedsSnapshot } from '../core/index.js';
 
 const safeCode = error => /^RPC_-?\d+$|^HTTP_\d+$/.test(error?.message || '') ? error.message : 'AGENT_UNAVAILABLE';
+export function compactUpdate(update) {
+  if (!update || typeof update !== 'object') return null;
+  const kind = update.sessionUpdate;
+  if (['agent_message_chunk', 'agent_thought_chunk'].includes(kind)) {
+    const content = update.content;
+    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map(c => c?.text || '').join('') : content?.text || '';
+    return { sessionUpdate: kind, content: { text: String(text).slice(0, 65536) } };
+  }
+  if (['tool_call', 'tool_call_update'].includes(kind)) {
+    const text = key => typeof update[key] === 'string' ? update[key].slice(0, 512) : undefined;
+    return { sessionUpdate: kind, toolCallId: text('toolCallId'), title: text('title'), kind: text('kind'), status: text('status') };
+  }
+  if (kind === 'usage_update') return { sessionUpdate: kind, _meta: {
+    'codebuddy.ai/requestId': String(update._meta?.['codebuddy.ai/requestId'] || '').slice(0, 512), usage: { credit: update._meta?.usage?.credit },
+  } };
+  return null;
+}
 export function createBridge({ token, instance = randomUUID(), cwd, store, createClient }) {
   const sessions = new Map(store.load().map(s => [s.id, s]));
   const dirty = new Set();
@@ -34,7 +51,8 @@ export function createBridge({ token, instance = randomUUID(), cwd, store, creat
         onDisconnect(error) { ready = false; agentError = safeCode(error); failActive('CONNECTION_LOST'); },
         onUpdate(params) {
           const session = [...sessions.values()].find(s => s.acpId === params?.sessionId);
-          if (session && !hydrating.has(session.id)) emit(session.id, 'update', { update: params.update });
+          const update = compactUpdate(params?.update);
+          if (!closing && session && update && !hydrating.has(session.id)) emit(session.id, 'update', { update });
         },
         onPermission(options, toolCall, params) {
           const sessionId = [...sessions.values()].find(s => s.acpId === params?.sessionId)?.id || active;
