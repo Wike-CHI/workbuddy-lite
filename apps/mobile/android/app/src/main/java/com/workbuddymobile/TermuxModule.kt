@@ -1,19 +1,22 @@
 package com.workbuddymobile
 
-import android.Manifest
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.PermissionInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import com.facebook.react.bridge.*
+import com.facebook.react.modules.core.PermissionAwareActivity
+import com.facebook.react.modules.core.PermissionListener
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 object TermuxResults {
   private data class Waiting(val action: String, val promise: Promise, val pending: PendingIntent, val timeout: Runnable)
@@ -54,6 +57,55 @@ class TermuxModule(private val context: ReactApplicationContext) : ReactContextB
   override fun getName() = "TermuxLauncher"
   private val permission = "com.termux.permission.RUN_COMMAND"
   private val settings = context.getSharedPreferences("workbuddy_settings", Context.MODE_PRIVATE)
+  private val pendingPermission = AtomicReference<Promise?>(null)
+  private val permissionRequestCode = 0x5742
+
+  @ReactMethod fun requestPermission(promise: Promise) {
+    context.runOnUiQueueThread {
+      if (context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+        promise.resolve(true); return@runOnUiQueueThread
+      }
+      if (pendingPermission.get() != null) {
+        promise.reject("PERMISSION_REQUEST_BUSY", "系统权限申请正在进行。"); return@runOnUiQueueThread
+      }
+      try {
+        context.packageManager.getPackageInfo("com.termux", 0)
+      } catch (_: PackageManager.NameNotFoundException) {
+        promise.reject("TERMUX_MISSING", "请先安装并打开 Termux。"); return@runOnUiQueueThread
+      }
+      try {
+        val info = context.packageManager.getPermissionInfo(permission, 0)
+        if (info.packageName != "com.termux" || (info.protectionLevel and PermissionInfo.PROTECTION_MASK_BASE) != PermissionInfo.PROTECTION_DANGEROUS) {
+          promise.reject("TERMUX_PERMISSION_UNAVAILABLE", "当前 Termux 未提供可申请的命令权限。"); return@runOnUiQueueThread
+        }
+      } catch (_: PackageManager.NameNotFoundException) {
+        promise.reject("TERMUX_PERMISSION_UNAVAILABLE", "当前 Termux 未注册命令权限。"); return@runOnUiQueueThread
+      }
+      val activity = context.currentActivity as? PermissionAwareActivity
+      if (activity == null) {
+        promise.reject("NO_ACTIVITY", "请在前台打开 App 后申请权限。"); return@runOnUiQueueThread
+      }
+      pendingPermission.set(promise)
+      try {
+        activity.requestPermissions(arrayOf(permission), permissionRequestCode, PermissionListener { code, _, _ ->
+          if (code != permissionRequestCode) false
+          else {
+            val waiting = pendingPermission.getAndSet(null)
+            // Trust the OS permission state, not a cached UI flag or callback array.
+            waiting?.resolve(context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED)
+            true
+          }
+        })
+      } catch (_: Exception) {
+        pendingPermission.getAndSet(null)?.reject("PERMISSION_REQUEST_FAILED", "系统未能打开权限申请，请检查系统权限设置。")
+      }
+    }
+  }
+
+  override fun invalidate() {
+    pendingPermission.getAndSet(null)?.reject("PERMISSION_CANCELLED", "权限申请已取消，请重新打开 App。")
+    super.invalidate()
+  }
 
   @ReactMethod fun status(promise: Promise) {
     var installed = true

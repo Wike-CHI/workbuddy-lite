@@ -6,14 +6,16 @@ import App from '../App';
 
 const defaults = {installed: true, permission: true, repo: '/data/data/com.termux/files/home/workbuddy-lite', version: '1.2.3'};
 const mockStatus = jest.fn(async () => ({...defaults}));
+const mockPermission = jest.fn(async () => true);
 const mockLaunch = jest.fn<Promise<{launched: boolean}>, unknown[]>(async () => ({launched: true}));
 jest.mock('../src/native', () => ({termux: {
-  status: () => mockStatus(), pairing: jest.fn(async () => null), saveSettings: jest.fn(async () => {}),
+  status: () => mockStatus(), requestPermission: () => mockPermission(), pairing: jest.fn(async () => null), saveSettings: jest.fn(async () => {}),
   launch: (...args: unknown[]) => mockLaunch(...args), openSettings: jest.fn(async () => {}), openTermux: jest.fn(async () => {}),
 }}));
 jest.mock('react-native-safe-area-context', () => ({SafeAreaProvider: ({children}: any) => children, SafeAreaView: ({children}: any) => children}));
 beforeEach(() => {
   mockStatus.mockReset().mockResolvedValue({...defaults});
+  mockPermission.mockReset().mockResolvedValue(true);
   mockLaunch.mockReset().mockResolvedValue({launched: true});
 });
 afterEach(() => jest.restoreAllMocks());
@@ -87,5 +89,41 @@ test('early foreground refresh restores saved settings and ignores older permiss
   await act(async () => { resolveOld({...defaults, permission: false}); });
   expect(JSON.stringify(renderer!.toJSON())).toContain('命令权限已授予');
   expect(renderer!.root.findAllByProps({accessibilityLabel: 'CLI 版本'})[0].props.value).toBe('3.4.5');
+  await act(async () => { renderer!.unmount(); });
+});
+
+test('request button explicitly opens the native permission flow', async () => {
+  mockStatus.mockResolvedValue({...defaults, permission: false});
+  let renderer: TestRenderer.ReactTestRenderer;
+  await act(async () => { renderer = TestRenderer.create(<App />); });
+  await act(async () => { renderer!.root.findAllByProps({testID: '申请 Termux 命令权限'})[0].props.onPress(); });
+  expect(mockPermission).toHaveBeenCalledTimes(1);
+  expect(mockLaunch).not.toHaveBeenCalled();
+  expect(JSON.stringify(renderer!.toJSON())).toContain('命令权限已授予');
+  await act(async () => { renderer!.unmount(); });
+});
+
+test('installation waits for OS permission approval before invoking Termux', async () => {
+  mockStatus.mockResolvedValue({...defaults, permission: false});
+  let grant: (value: boolean) => void = () => {};
+  mockPermission.mockImplementationOnce(() => new Promise(resolve => { grant = resolve; }));
+  let renderer: TestRenderer.ReactTestRenderer;
+  await act(async () => { renderer = TestRenderer.create(<App />); });
+  await act(async () => { renderer!.root.findAllByProps({testID: '安装 CLI'})[0].props.onPress(); });
+  expect(mockPermission).toHaveBeenCalledTimes(1);
+  expect(mockLaunch).not.toHaveBeenCalled();
+  await act(async () => { grant(true); });
+  expect(mockLaunch).toHaveBeenCalledWith('install', defaults.repo, '1.2.3');
+  await act(async () => { renderer!.unmount(); });
+});
+
+test('permission denial blocks commands even when the old UI flag said granted', async () => {
+  mockPermission.mockResolvedValue(false);
+  let renderer: TestRenderer.ReactTestRenderer;
+  await act(async () => { renderer = TestRenderer.create(<App />); });
+  await act(async () => { renderer!.root.findAllByProps({testID: '登录账户'})[0].props.onPress(); });
+  expect(mockLaunch).not.toHaveBeenCalled();
+  expect(JSON.stringify(renderer!.toJSON())).toContain('系统尚未授予 Termux 命令权限');
+  expect(renderer!.root.findAllByProps({testID: '申请 Termux 命令权限'}).length).toBeGreaterThan(0);
   await act(async () => { renderer!.unmount(); });
 });

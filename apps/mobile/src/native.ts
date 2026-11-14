@@ -12,6 +12,7 @@ export interface Environment {
 }
 interface Launcher {
   status(): Promise<Environment>;
+  requestPermission(): Promise<boolean>;
   saveSettings(repo: string, version: string): Promise<void>;
   pairing(): Promise<Pairing | null>;
   openSettings(): Promise<void>;
