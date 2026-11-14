@@ -89,11 +89,14 @@ function Mobile() {
   );
   const attempt = useRef<{ text: string; id: string } | null>(null);
   const refreshGeneration = useRef(0);
+  const settingsLoaded = useRef(false);
   async function refresh(loadSettings = false) {
     const generation = ++refreshGeneration.current;
     const environment = await termux.status();
     if (generation !== refreshGeneration.current) return;
-    setEnv(current => loadSettings ? environment : {
+    const restoreSettings = loadSettings || !settingsLoaded.current;
+    settingsLoaded.current = true;
+    setEnv(current => restoreSettings ? environment : {
       ...current,
       installed: environment.installed,
       permission: environment.permission,

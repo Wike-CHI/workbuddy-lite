@@ -71,3 +71,21 @@ test('environment opens terminal login and demo never runs a task', async () => 
   expect(mockLaunch).not.toHaveBeenCalled();
   await act(async () => { renderer!.unmount(); });
 });
+
+test('early foreground refresh restores saved settings and ignores older permission results', async () => {
+  let resolveOld: (value: typeof defaults) => void = () => {};
+  mockStatus.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+  mockStatus.mockResolvedValue({...defaults, repo: `${defaults.repo}-saved`, version: '3.4.5'});
+  let listener: (state: AppStateStatus) => void = () => {};
+  jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, callback) => {
+    listener = callback; return {remove: jest.fn()};
+  });
+  let renderer: TestRenderer.ReactTestRenderer;
+  await act(async () => { renderer = TestRenderer.create(<App />); });
+  await act(async () => { listener('active'); });
+  expect(renderer!.root.findAllByProps({accessibilityLabel: '仓库路径'})[0].props.value).toBe(`${defaults.repo}-saved`);
+  await act(async () => { resolveOld({...defaults, permission: false}); });
+  expect(JSON.stringify(renderer!.toJSON())).toContain('命令权限已授予');
+  expect(renderer!.root.findAllByProps({accessibilityLabel: 'CLI 版本'})[0].props.value).toBe('3.4.5');
+  await act(async () => { renderer!.unmount(); });
+});
