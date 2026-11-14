@@ -1,0 +1,28 @@
+name: Android P0 probes
+on:
+  pull_request:
+    paths:
+      - 'scripts/android/**'
+      - 'docs/android-p0.md'
+      - '.github/workflows/android-p0.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/android/**'
+      - '.github/workflows/android-p0.yml'
+permissions:
+  contents: read
+jobs:
+  offline-probes:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: bash -n scripts/android/bootstrap.sh
+      - run: shellcheck scripts/android/bootstrap.sh
+      - run: node --test scripts/android/tests/*.test.mjs
