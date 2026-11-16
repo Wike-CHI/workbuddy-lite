@@ -523,18 +523,39 @@ std::string importChromeCookiesJson() {
 }
 
 // 浏览器面板用独立的持久化 profile：登录一次之后重启还在
+void postBrowserError(const std::string& message) {
+  if (!g_app.webview) return;
+  json state = {{"type", "browser-state"}, {"error", message}};
+  std::wstring payload = wbl::utf8ToWide(state.dump());
+  g_app.webview->PostWebMessageAsJson(payload.c_str());
+}
+
 void createBrowserEnv() {
   if (g_app.browserEnv) {
     createBrowserController();
     return;
   }
+  static bool retried = false;
   std::wstring folder = exeDirW() + L"\\data\\browser-profile";
   CreateCoreWebView2EnvironmentWithOptions(
       nullptr, folder.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
+          [folder](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
             if (FAILED(hr) || !env) {
               wbl::logf("browser env 创建失败 hr=" + std::to_string(hr));
+              if (!retried) {
+                // profile 被上次异常退出锁坏/写坏：挪走再建一次
+                retried = true;
+                std::wstring bad = folder + L".bad-" + std::to_wstring(GetTickCount64());
+                MoveFileExW(folder.c_str(), bad.c_str(), MOVEFILE_COPY_ALLOWED);
+                std::error_code ec;
+                std::filesystem::remove_all(std::filesystem::path(folder), ec);
+                wbl::logf("browser profile 已重建，旧目录保留在 " + wbl::wideToUtf8(bad));
+                createBrowserEnv();
+                return S_OK;
+              }
+              postBrowserError("浏览器启动失败（hr=" + std::to_string(hr) +
+                               "），已尝试重建配置；如果仍失败请重启应用");
               return hr;
             }
             g_app.browserEnv = env;

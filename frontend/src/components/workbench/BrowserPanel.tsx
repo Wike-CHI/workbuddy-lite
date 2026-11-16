@@ -73,6 +73,7 @@ export function BrowserPanel() {
         loading: data.loading,
         canGoBack: data.canGoBack,
         canGoForward: data.canGoForward,
+        error: data.error,
       })
       if (typeof data.url === 'string' && data.url && data.url !== address) setAddress(data.url)
     }
@@ -176,6 +177,7 @@ export function BrowserPanel() {
           输入本地开发地址（例如 localhost:5173）后，这里会加载一个独立的 WebView2。
           <br />
           登录态存在 `data\browser-profile`，登录一次之后重启还在。
+          {info?.error && <span className="mt-2 block text-destructive">{info.error}</span>}
         </div>
       </div>
     </div>

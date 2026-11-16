@@ -51,7 +51,14 @@ interface WorkbenchState {
   diff: GitDiffResult | null
   diffLoading: boolean
   browserUrl: string
-  browserInfo: { url?: string; title?: string; loading?: boolean; canGoBack?: boolean; canGoForward?: boolean } | null
+  browserInfo: {
+    url?: string
+    title?: string
+    loading?: boolean
+    canGoBack?: boolean
+    canGoForward?: boolean
+    error?: string
+  } | null
   taskFocus: string
 
   toggle: (open?: boolean) => void
