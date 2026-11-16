@@ -736,7 +736,13 @@ bool Backend::start() {
     std::string err;
     std::thread([this] {
       std::string e;
-      if (!ensureAgent(e)) logf("agent 预热失败: " + e);
+      if (!ensureAgent(e)) {
+        logf("agent 预热失败: " + e);
+        return;
+      }
+      // 顺手把两个慢接口预热，界面第一次打开用量/工作空间就能直接命中缓存
+      agentRecents();
+      cliStats();
     }).detach();
   }
   return true;
@@ -971,29 +977,32 @@ json Backend::usageSummary() {
   json list = json::array();
   {
     std::lock_guard<std::mutex> lk(storeMu_);
-    for (const auto& s : jval(store_, "sessions", json::array())) {
-      json u = jval(s, "usage", json::object());
-      double credits = numAt(u, "credits", 0);
-      double charged = numAt(u, "charged", 0);
-      double todayCredit = 0;
-      json daily = jval(u, "daily", json::object());
-      if (daily.is_object()) todayCredit = numAt(daily, today.c_str(), 0);
-      totalCredits += credits;
-      totalCharged += charged;
-      todayCredits += todayCredit;
-      bool here = samePath(jstr(s, "cwd"), cw);
-      if (here) {
-        workspaceCredits += credits;
-        workspaceCharged += charged;
-        workspaceToday += todayCredit;
+    auto arrIt = store_.find("sessions");
+    if (arrIt != store_.end() && arrIt->is_array()) {
+      for (const auto& s : *arrIt) {
+        json u = jval(s, "usage", json::object());
+        double credits = numAt(u, "credits", 0);
+        double charged = numAt(u, "charged", 0);
+        double todayCredit = 0;
+        json daily = jval(u, "daily", json::object());
+        if (daily.is_object()) todayCredit = numAt(daily, today.c_str(), 0);
+        totalCredits += credits;
+        totalCharged += charged;
+        todayCredits += todayCredit;
+        bool here = samePath(jstr(s, "cwd"), cw);
+        if (here) {
+          workspaceCredits += credits;
+          workspaceCharged += charged;
+          workspaceToday += todayCredit;
+        }
+        list.push_back({{"id", jstr(s, "id")},
+                        {"title", jstr(s, "title", "新会话")},
+                        {"cwd", jstr(s, "cwd")},
+                        {"credits", credits},
+                        {"charged", charged},
+                        {"updatedAt", s.value("updatedAt", static_cast<int64_t>(0))},
+                        {"inWorkspace", here}});
       }
-      list.push_back({{"id", jstr(s, "id")},
-                      {"title", jstr(s, "title", "新会话")},
-                      {"cwd", jstr(s, "cwd")},
-                      {"credits", credits},
-                      {"charged", charged},
-                      {"updatedAt", s.value("updatedAt", static_cast<int64_t>(0))},
-                      {"inWorkspace", here}});
     }
   }
   std::sort(list.begin(), list.end(), [](const json& a, const json& b) {
@@ -1014,7 +1023,7 @@ json Backend::usageSummary() {
               {"model", selectedModel()}};
 
   if (!demo_) {
-    json stats = agentGet("/api/v1/stats");
+    json stats = cliStats();
     if (stats.is_object() && !stats.empty()) {
       auto sv = [&](const char* key) -> int64_t {
         auto it = stats.find(key);
@@ -1046,6 +1055,80 @@ json Backend::agentGet(const std::string& path) {
   } catch (...) {
     return json::object();
   }
+}
+
+// /api/v1/stats 会扫全部历史会话，实测 0.9–1.2s；前端每轮对话要读好几次用量。
+// 这里缓存 60s，过期后返回旧值并在后台刷新，避免把 httplib 的线程池占满。
+json Backend::cliStats() {
+  const int64_t now = nowMs();
+  bool haveCache = false;
+  {
+    std::lock_guard<std::mutex> lk(remoteMu_);
+    haveCache = cliStatsCache_.is_object() && !cliStatsCache_.empty();
+    if (haveCache && now - cliStatsAt_ < 60000) return cliStatsCache_;
+  }
+  if (!cliStatsBusy_.exchange(true)) {
+    if (!haveCache) {
+      // 首次没有旧值，只能同步等一次
+      json fresh = agentGet("/api/v1/stats");
+      std::lock_guard<std::mutex> lk(remoteMu_);
+      if (fresh.is_object() && !fresh.empty()) {
+        cliStatsCache_ = fresh;
+        cliStatsAt_ = nowMs();
+      }
+      cliStatsBusy_ = false;
+      return cliStatsCache_;
+    }
+    std::thread([this] {
+      json fresh = agentGet("/api/v1/stats");
+      {
+        std::lock_guard<std::mutex> lk(remoteMu_);
+        if (fresh.is_object() && !fresh.empty()) {
+          cliStatsCache_ = fresh;
+          cliStatsAt_ = nowMs();
+        }
+      }
+      cliStatsBusy_ = false;
+    }).detach();
+  }
+  std::lock_guard<std::mutex> lk(remoteMu_);
+  return cliStatsCache_;
+}
+
+// /api/v1/sessions/workspaces 同样是现算的，工作空间面板打开一次要等半秒
+json Backend::agentRecents() {
+  const int64_t now = nowMs();
+  bool haveCache = false;
+  {
+    std::lock_guard<std::mutex> lk(remoteMu_);
+    haveCache = !recentsCache_.empty();
+    if (haveCache && now - recentsAt_ < 60000) return recentsCache_;
+  }
+  if (!recentsBusy_.exchange(true)) {
+    if (!haveCache) {
+      json fresh = agentGet("/api/v1/sessions/workspaces");
+      std::lock_guard<std::mutex> lk(remoteMu_);
+      if (fresh.is_object() && !fresh.empty()) {
+        recentsCache_ = fresh;
+        recentsAt_ = nowMs();
+      }
+      recentsBusy_ = false;
+      return recentsCache_;
+    }
+    std::thread([this] {
+      json fresh = agentGet("/api/v1/sessions/workspaces");
+      {
+        std::lock_guard<std::mutex> lk(remoteMu_);
+        if (fresh.is_object() && !fresh.empty()) {
+          recentsCache_ = fresh;
+          recentsAt_ = nowMs();
+        }
+      }
+      recentsBusy_ = false;
+    }).detach();
+  }
+  std::lock_guard<std::mutex> lk(remoteMu_);
+  return recentsCache_;
 }
 
 json Backend::scannedWorkspaces() {
@@ -1177,7 +1260,7 @@ json Backend::workspaceList() {
     }
   }
   if (!demo_) {
-    json ws = agentGet("/api/v1/sessions/workspaces");
+    json ws = agentRecents();
     for (const auto& w : jval(ws, "workspaces", json::array())) {
       add(jstr(w, "path"), jstr(w, "label"), "recent");
     }
@@ -1187,9 +1270,12 @@ json Backend::workspaceList() {
   }
   {
     std::lock_guard<std::mutex> lk(storeMu_);
-    for (const auto& s : jval(store_, "sessions", json::array())) {
-      std::string cwd = jstr(s, "cwd");
-      add(cwd, leafName(cwd), "session");
+    auto arrIt = store_.find("sessions");
+    if (arrIt != store_.end() && arrIt->is_array()) {
+      for (const auto& s : *arrIt) {
+        std::string cwd = jstr(s, "cwd");
+        add(cwd, leafName(cwd), "session");
+      }
     }
   }
   for (const auto& d : listSubdirs(cw, 30)) {
@@ -2614,8 +2700,12 @@ void Backend::handleStatic(const httplib::Request& req, httplib::Response& res) 
   }
   std::stringstream ss;
   ss << in.rdbuf();
-  // 前端是运行时从磁盘读的，缓存住就会改完看不到效果
-  res.set_header("Cache-Control", "no-store");
+  // /assets/ 下是带 hash 的构建产物，可以长期缓存；其余保持 no-store，改完立刻能看到
+  if (path.rfind("/assets/", 0) == 0) {
+    res.set_header("Cache-Control", "public, max-age=31536000, immutable");
+  } else {
+    res.set_header("Cache-Control", "no-store");
+  }
   res.set_content(ss.str(), contentTypeFor(path));
 }
 

@@ -212,6 +212,12 @@ ACP 的 `session/new` 结果里同时带 `models.availableModels`（含 `_meta.c
 预算在 `_meta.usage.quota.percent` / `reset_at`。用 requestId 记住上次值、只累加增量，
 否则每来一条 usage 都会把积分翻倍。
 
+**agent 的两个慢接口要缓存。** `/api/v1/stats` 会扫全部历史会话（0.9–1.2s），
+`/api/v1/sessions/workspaces` 也是现算的（0.4–0.6s）。前端每轮对话要读好几次用量，
+直接同步转发会把 httplib 的线程池占满、界面发消息都变卡。现在这两个接口在后端缓存 60s，
+过期后先返回旧值再后台刷新；启动时顺带预热一次。实测 `/api/usage` 985ms → 15ms，
+`/api/workspaces` 430ms → 15ms。带 hash 的 `/assets/*` 也改成一年强缓存，其余仍是 `no-store`。
+
 **工作空间不只读 agent 的最近列表。** `/api/v1/sessions/workspaces` 只是最近列表；
 `~/.codebuddy/projects` 和 `~/.workbuddy/projects` 里还有大量历史项目，目录名是编码过的路径，
 所以后端会扫描每个项目里 session jsonl 的 `cwd` 字段还原真实路径，并读

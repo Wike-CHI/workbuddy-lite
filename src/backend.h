@@ -68,6 +68,9 @@ class Backend {
   bool spawnWindow(const std::string& path);
   std::string pickFolder();
   json agentGet(const std::string& path);
+  // agent 的 stats / recents 很慢（0.5–1.2s），缓存 + 后台刷新，别卡住 HTTP 线程
+  json cliStats();
+  json agentRecents();
 
   // 多文件夹工作空间：一个名字 + 最多 5 个文件夹，cwd 取第一个
   json findWorkspace(const std::string& id);
@@ -155,6 +158,15 @@ class Backend {
   mutable std::mutex wsCacheMu_;
   json wsCache_ = json::array();
   int64_t wsCacheAt_ = 0;
+
+  // agent 慢接口的缓存（stats 要扫全部会话，recents 也要扫盘）
+  std::mutex remoteMu_;
+  json cliStatsCache_ = json::object();
+  int64_t cliStatsAt_ = 0;
+  std::atomic<bool> cliStatsBusy_{false};
+  json recentsCache_ = json::array();
+  int64_t recentsAt_ = 0;
+  std::atomic<bool> recentsBusy_{false};
 
   // 当前工作空间：{id, name, folders[]}
   mutable std::mutex wsMu_;
