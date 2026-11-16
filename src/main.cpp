@@ -532,6 +532,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
                             settings->put_AreDefaultContextMenusEnabled(FALSE);
                             settings->put_IsStatusBarEnabled(FALSE);
                             settings->put_AreDevToolsEnabled(TRUE);
+                            // 交给页面自己处理 Ctrl+N / Ctrl+K，别让 WebView 弹浏览器窗口
+                            ICoreWebView2Settings3* settings3 = nullptr;
+                            if (SUCCEEDED(settings->QueryInterface(IID_PPV_ARGS(&settings3))) && settings3) {
+                              settings3->put_AreBrowserAcceleratorKeysEnabled(FALSE);
+                              settings3->Release();
+                            }
                             settings->Release();
                           }
 
