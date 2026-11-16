@@ -124,6 +124,8 @@ interface ChatState {
   handleEvent: (ev: AcpEvent) => void
   startPolling: () => void
   loadSession: (id: string) => Promise<void>
+  renameSession: (id: string, title: string) => Promise<void>
+  deleteSession: (id: string) => Promise<void>
   newSession: () => void
   refreshSessions: () => Promise<void>
   send: (text: string) => Promise<void>
@@ -343,8 +345,34 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
   },
 
-  newSession: () => {
+  renameSession: async (id, title) => {
+    const clean = title.trim()
+    if (!clean) return
     set({
+      sessions: get().sessions.map((s) => (s.id === id ? { ...s, title: clean } : s)),
+      activeTitle: get().activeId === id ? clean : get().activeTitle,
+    })
+    try {
+      await api.renameSession(id, clean)
+    } catch (error) {
+      toast.error('重命名失败：' + (error instanceof Error ? error.message : String(error)))
+      void get().refreshSessions()
+    }
+  },
+
+  deleteSession: async (id) => {
+    const wasActive = get().activeId === id
+    set({ sessions: get().sessions.filter((s) => s.id !== id) })
+    if (wasActive) get().newSession()
+    try {
+      await api.deleteSession(id)
+    } catch (error) {
+      toast.error('删除失败：' + (error instanceof Error ? error.message : String(error)))
+      void get().refreshSessions()
+    }
+  },
+
+  newSession: () => {    set({
       activeId: null,
       activeTitle: '新会话',
       messages: [],

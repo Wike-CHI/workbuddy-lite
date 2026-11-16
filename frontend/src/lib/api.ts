@@ -38,6 +38,10 @@ export const api = {
   bootstrap: () => request<Bootstrap>('/api/bootstrap'),
   sessions: () => request<Bootstrap>('/api/sessions'),
   session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
+  renameSession: (id: string, title: string) =>
+    post<{ ok: boolean }>(`/api/sessions/${id}/rename`, { title }),
+  deleteSession: (id: string) =>
+    request<{ ok: boolean }>(`/api/sessions/${id}`, { method: 'DELETE' }),
   chat: (body: {
     sessionId: string
     text: string

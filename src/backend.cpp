@@ -1208,14 +1208,9 @@ std::string Backend::runOrganizerPrompt(const std::string& prompt, std::string& 
     if (it != aiText_.end()) text = it->second;
     aiText_.erase(sid);
   }
-  try {
-    client_->request("session/delete", {{"sessionId", sid}}, 15);
-  } catch (...) {
-    try {
-      client_->request("session/close", {{"sessionId", sid}}, 15);
-    } catch (...) {
-    }
-  }
+  // 当前 CLI 不认 session/delete / session/close（都返回 Method not found），
+  // 而这个临时会话本来就不进 store、不出现在列表里，留着不影响使用，
+  // 所以不再每次整理都去试一次（还会白等一轮 rpc 超时）。
   if (!ok) return "";
   if (text.empty()) {
     err = "模型没有返回内容";

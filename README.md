@@ -240,8 +240,9 @@ ACP 的 `session/new` 结果里同时带 `models.availableModels`（含 `_meta.c
 
 **侧栏按 cwd 分组，AI 整理不污染聊天。** `bootstrap` 返回所有会话的 cwd，侧栏按 cwd 分组；
 加载另一个项目的会话时会顺手把当前工作空间切过去，新会话和后续工具调用都落在正确目录。
-AI 整理走后端临时 ACP 会话，只收集 `agent_message_chunk` 的文本，整理完 `session/delete`
-清掉临时会话；返回的 JSON 先给前端预览，用户点应用后才 rename 会话、写 `projects.json`。
+AI 整理走后端临时 ACP 会话，只收集 `agent_message_chunk` 的文本；返回的 JSON 先给前端预览，
+用户点应用后才 rename 会话、写 `projects.json`。当前 CLI 不支持 `session/delete` / `session/close`，
+所以临时会话留在 agent 侧，但它不进 `sessions.json`、不出现在列表里，不影响使用。
 
 **多窗口共用一份 `sessions.json`。** 每个进程启动时各读一份，写之前用
 `Local\WorkBuddyLiteStore` 命名互斥锁串行化，并把磁盘上的新会话合并回来；
