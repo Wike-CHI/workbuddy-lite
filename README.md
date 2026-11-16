@@ -139,7 +139,8 @@ node tools/browser.mjs shot out.png               # 截图（只拍页面）
 node tools/browser.mjs import-chrome              # 导入 Chrome 登录态（需先退出 Chrome）
 ```
 
-端口默认读 `bin/data/port.txt`，也可以用 `WBL_PORT` 或 `--port=` 指定。
+端口默认读 `%LOCALAPPDATA%\WorkBuddyLite\port.txt`（启动时写入；设了 `WORKBUDDY_LITE_DATA` 就是那个目录），
+也可以用 `WBL_PORT` 或 `--port=` 指定。
 
 ## 目录
 

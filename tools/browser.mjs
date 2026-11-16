@@ -23,9 +23,9 @@ function findPort() {
   if (flag) return Number(flag.slice('--port='.length))
 
   const candidates = [
-    path.resolve(here, '..', 'bin', 'data', 'port.txt'),
     path.join(process.env.LOCALAPPDATA || '', 'WorkBuddyLite', 'port.txt'),
     path.join(os.homedir(), 'AppData', 'Local', 'WorkBuddyLite', 'port.txt'),
+    path.resolve(here, '..', 'bin', 'data', 'port.txt'),
   ]
   for (const file of candidates) {
     try {
