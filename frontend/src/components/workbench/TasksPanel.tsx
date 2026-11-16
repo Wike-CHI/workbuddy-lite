@@ -98,21 +98,34 @@ export function workflowRuns(events: AcpEvent[]): WorkflowRunView[] {
     }
   }
 
-  // 如果子代理的流式文本带了 workflowAgentKey，就归到对应代理名下
+  // 优先用 workflowAgentKey 归集；CLI 没带这个字段时，按「上一个 started 的代理」兜底
+  let active: { runId: string; key: string } | null = null
   for (const event of events) {
-    const key = event.data?.workflowAgentKey
-    if (!key) continue
+    const data = event.data || {}
+    if (event.type === 'workflow') {
+      const kind = String(data.kind || '')
+      const runId = String(data.runId || '')
+      if (kind === 'workflow_agent_started' && data.agentKey) {
+        active = { runId, key: String(data.agentKey) }
+      } else if (kind === 'workflow_agent_finished' || kind === 'workflow_agent_cached') {
+        if (active && active.key === String(data.agentKey || '')) active = null
+      }
+      continue
+    }
     if (event.type !== 'text' && event.type !== 'tool') continue
-    const run = runs.get(String(event.data?.runId || ''))
+    if (data.parentToolCallId) continue
+    const key = data.workflowAgentKey ? String(data.workflowAgentKey) : active?.key
+    if (!key) continue
+    const run = runs.get(String(data.runId || active?.runId || ''))
     if (!run) continue
-    const agent = run.agents.find((item) => item.key === String(key))
+    const agent = run.agents.find((item) => item.key === key)
     if (!agent) continue
     if (event.type === 'text') {
-      const text = String(event.data?.text || '')
-      if (text.trim() && agent.output.length < 4000) agent.output += text
-    } else if (event.type === 'tool') {
-      const title = String(event.data?.title || '工具')
-      if (agent.output.length < 4000) agent.output += `\n→ ${title}`
+      const text = String(data.text || '')
+      if (text.trim()) agent.output = (agent.output + text).slice(0, 4000)
+    } else {
+      const title = String(data.title || '工具')
+      agent.output = (agent.output + `\n→ ${title}`).slice(0, 4000)
     }
   }
 

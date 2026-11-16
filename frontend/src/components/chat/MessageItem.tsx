@@ -21,7 +21,7 @@ import { UserMetaPart } from './UserMetaPart'
 function UserText({ text }: TextMessagePartProps) {
   if (!text) return null
   return (
-    <div className="whitespace-pre-wrap break-words rounded-lg border border-border/70 bg-surface-2/60 px-3 py-2 text-[13px] leading-6 text-ink">
+    <div className="whitespace-pre-wrap break-words border-l-2 border-primary/40 bg-surface-2/50 px-3 py-2 text-[13px] leading-6 text-ink">
       {text}
     </div>
   )
@@ -62,7 +62,6 @@ export function MessageItem() {
       <MessagePrimitive.If user>
         <div className="flex justify-start py-2">
           <div className="flex max-w-[88%] flex-col items-start gap-1">
-            <div className="text-[10.5px] text-ink-4">你</div>
             <MessagePrimitive.Parts
               components={{
                 Text: UserText,

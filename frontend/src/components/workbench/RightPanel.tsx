@@ -38,7 +38,7 @@ const TABS: { id: WorkbenchTab; label: string; icon: typeof FolderTree }[] = [
   { id: 'todos', label: '待办', icon: ListTodo },
   { id: 'git', label: 'Git', icon: GitBranch },
   { id: 'tasks', label: '任务', icon: Bot },
-  { id: 'browser', label: '浏览器', icon: Globe },
+  { id: 'browser', label: '网页', icon: Globe },
 ]
 
 function DetailsPopover() {

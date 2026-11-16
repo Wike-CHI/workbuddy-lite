@@ -51,11 +51,11 @@ export function UsageDialog() {
         </div>
 
         <div className="space-y-4 overflow-y-auto px-4 py-4">
-          <div className="rounded-xl border border-border bg-muted/20 p-4">
+          <div className="rounded-lg border border-border bg-surface-2/50 p-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-[10.5px] tracking-wide text-muted-foreground">共享积分预算</div>
-                <div className="mt-0.5 font-mono text-[26px] font-semibold leading-tight">
+                <div className="text-[11px] tracking-wide text-muted-foreground">共享积分预算</div>
+                <div className="mt-0.5 font-mono text-[28px] font-semibold leading-tight">
                   {pct === null ? '—' : pct.toFixed(1) + '%'}
                   <span className="ml-1 text-[11px] font-normal text-muted-foreground">已用</span>
                 </div>
@@ -66,7 +66,7 @@ export function UsageDialog() {
               </div>
             </div>
             <Progress className="mt-3" value={pct === null ? 0 : Math.max(0, Math.min(100, pct))} />
-            <div className="mt-2 text-[10.5px] text-muted-foreground">
+            <div className="mt-2 text-[11px] text-muted-foreground">
               预算百分比来自 CodeBuddy 的 <code className="rounded bg-card px-1">usage_update.quota</code>
             </div>
           </div>
@@ -79,7 +79,7 @@ export function UsageDialog() {
           </div>
 
           <section>
-            <h3 className="mb-1.5 text-[10.5px] font-medium tracking-wide text-muted-foreground">当前模型</h3>
+            <h3 className="mb-1.5 text-[11px] font-medium tracking-wide text-muted-foreground">当前模型</h3>
             <div className="flex items-center justify-between rounded-lg px-2 py-1.5 text-xs">
               <span className="truncate">{currentModel ? modelShort(currentModel) : model || '—'}</span>
               <span className="font-mono text-[11px] text-muted-foreground">
@@ -93,7 +93,7 @@ export function UsageDialog() {
           </section>
 
           <section>
-            <h3 className="mb-1.5 text-[10.5px] font-medium tracking-wide text-muted-foreground">最近会话</h3>
+            <h3 className="mb-1.5 text-[11px] font-medium tracking-wide text-muted-foreground">最近会话</h3>
             {!sessions.length && <div className="py-4 text-center text-xs text-muted-foreground">还没有积分记录</div>}
             {sessions.map((session) => (
               <div key={session.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-muted/40">
@@ -109,7 +109,7 @@ export function UsageDialog() {
           </section>
 
           <section>
-            <h3 className="mb-1.5 text-[10.5px] font-medium tracking-wide text-muted-foreground">
+            <h3 className="mb-1.5 text-[11px] font-medium tracking-wide text-muted-foreground">
               CodeBuddy 历史用量
             </h3>
             {!stats ? (

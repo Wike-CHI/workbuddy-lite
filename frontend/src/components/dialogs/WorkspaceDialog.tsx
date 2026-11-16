@@ -147,8 +147,8 @@ export function WorkspaceDialog() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-w-[760px]">
         <div className="flex items-center justify-between border-b border-border px-4 py-3 pr-12">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <FolderGit2 className="size-4 text-primary" />
+          <div className="flex items-center gap-2 text-[13.5px] font-semibold">
+            <FolderGit2 className="size-4 text-ink-3" />
             工作空间
           </div>
           <div className="flex items-center gap-1.5">
@@ -176,12 +176,12 @@ export function WorkspaceDialog() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-          <div className="rounded-xl border border-[#d6e3fb] bg-accent px-3 py-2.5">
+          <div className="rounded-lg border border-border bg-surface-2/60 px-3 py-2.5">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
-                <div className="text-[10.5px] text-[#5b7bb5]">当前工作空间</div>
+                <div className="text-[11px] text-ink-3">当前工作空间</div>
                 <div className="mt-0.5 flex items-center gap-1.5">
-                  <span className="truncate text-[13px] font-medium text-accent-foreground">
+                  <span className="truncate text-[13px] font-medium text-ink">
                     {workspaceName || '—'}
                   </span>
                   {currentFolders.length > 1 && (
@@ -192,7 +192,7 @@ export function WorkspaceDialog() {
                   {currentFolders.map((folder, index) => (
                     <div
                       key={folder}
-                      className="flex items-center gap-1 font-mono text-[10.5px] text-[#5b7bb5]"
+                      className="flex items-center gap-1 font-mono text-[11px] text-ink-3"
                       title={folder}
                     >
                       <span className="shrink-0">{index + 1}.</span>
@@ -260,7 +260,7 @@ export function WorkspaceDialog() {
           </p>
 
           {editing && (
-            <div className="mt-3 rounded-xl border border-primary/30 bg-accent/40 px-3 py-2.5">
+            <div className="mt-3 rounded-lg border border-primary/30 bg-surface-2/50 px-3 py-2.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] font-medium text-foreground">
                   {editing.id ? '编辑工作空间' : '新建工作空间'}
@@ -357,14 +357,14 @@ export function WorkspaceDialog() {
 
           {customList.length > 0 && (
             <>
-              <div className="mt-3 px-0.5 text-[10.5px] font-medium text-muted-foreground">我的工作空间</div>
+              <div className="mt-3 px-0.5 text-[11px] font-medium text-muted-foreground">我的工作空间</div>
               <div className="mt-1.5 space-y-1.5">
                 {customList.map((workspace) => {
                   const folders = workspace.folders?.length ? workspace.folders : [workspace.path]
                   return (
                     <div
                       key={workspace.id || workspace.path}
-                      className="flex items-center gap-2.5 rounded-xl border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20"
+                      className="flex items-center gap-2.5 rounded-lg border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20"
                     >
                       <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-primary">
                         <FolderGit2 className="size-4" />
@@ -375,7 +375,7 @@ export function WorkspaceDialog() {
                           <Badge variant="secondary">{folders.length} 个文件夹</Badge>
                           {workspace.active && <Badge variant="success">当前</Badge>}
                         </div>
-                        <div className="truncate font-mono text-[10.5px] text-muted-foreground" title={folders.join('\n')}>
+                        <div className="truncate font-mono text-[11px] text-muted-foreground" title={folders.join('\n')}>
                           {folders.join('  ·  ')}
                         </div>
                       </div>
@@ -404,8 +404,9 @@ export function WorkspaceDialog() {
                         </Button>
                         <Button
                           type="button"
+                          variant="ghost"
                           size="sm"
-                          className="h-7 px-2 text-[11px]"
+                          className="h-7 px-2 text-[11px] font-normal text-ink-2"
                           onClick={async () => {
                             await openWorkspace(workspace.path)
                             setOpen(false)
@@ -443,14 +444,14 @@ export function WorkspaceDialog() {
 
           {otherList.length > 0 && (
             <>
-              <div className="mt-4 px-0.5 text-[10.5px] font-medium text-muted-foreground">
+              <div className="mt-4 px-0.5 text-[11px] font-medium text-muted-foreground">
                 其他工作空间（CodeBuddy / 本机会话 / 子目录）
               </div>
               <div className="mt-1.5 space-y-1.5">
                 {otherList.map((workspace) => (
                   <div
                     key={workspace.path}
-                    className="flex items-center gap-2.5 rounded-xl border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20"
+                    className="flex items-center gap-2.5 rounded-lg border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20"
                   >
                     <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
                       <FolderGit2 className="size-4" />
@@ -460,7 +461,7 @@ export function WorkspaceDialog() {
                         <span className="truncate">{workspace.label || leafOf(workspace.path)}</span>
                         <Badge variant="secondary">{SOURCE_LABEL[workspace.source] || workspace.source}</Badge>
                       </div>
-                      <div className="truncate font-mono text-[10.5px] text-muted-foreground">{workspace.path}</div>
+                      <div className="truncate font-mono text-[11px] text-muted-foreground">{workspace.path}</div>
                     </div>
                     <div className="flex shrink-0 gap-1">
                       <Button
@@ -477,8 +478,9 @@ export function WorkspaceDialog() {
                       </Button>
                       <Button
                         type="button"
+                        variant="ghost"
                         size="sm"
-                        className="h-7 px-2 text-[11px]"
+                        className="h-7 px-2 text-[11px] font-normal text-ink-2"
                         onClick={async () => {
                           await openWorkspace(workspace.path)
                           setOpen(false)

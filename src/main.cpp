@@ -993,9 +993,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
   auto envHandler = Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
       [hwnd, url](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
         if (FAILED(hr) || !env) {
-          wbl::logf("创建 WebView2 环境失败");
-          MessageBoxW(hwnd, L"WebView2 运行时初始化失败，请安装 Microsoft Edge WebView2 Runtime。",
-                      L"WorkBuddy Lite", MB_ICONERROR);
+          wbl::logf("创建 WebView2 环境失败 hr=" + std::to_string(hr));
+          // 自动化（--shot/--winshot/--eval）时不要弹模态框，否则脚本会一直等
+          const bool automation = !getArgValue("--shot", "").empty() || !getArgValue("--winshot", "").empty() ||
+                                  !getArgValue("--eval", "").empty();
+          if (!automation) {
+            MessageBoxW(hwnd, L"WebView2 运行时初始化失败，请安装 Microsoft Edge WebView2 Runtime。",
+                        L"WorkBuddy Lite", MB_ICONERROR);
+          }
           return hr;
         }
         g_app.env = env;

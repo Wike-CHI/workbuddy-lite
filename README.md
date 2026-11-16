@@ -375,3 +375,18 @@ bin\workbuddy-lite.exe --demo --eval "setTimeout(function(){window.__wbl.send('�
 `--wait` 后调用 WebView2 的 CapturePreview 存图并退出；`--click` / `--click-at` 在等待期间
 点一下指定 id 的元素（例如 `credit-btn`、`cwd-chip`）。
 日志在 `bin\data\app.log`；设置了 `WORKBUDDY_LITE_DATA` 时日志也落到该目录，方便并行测试。
+
+## 视觉回归
+
+`scripts/visual-check.mjs` 用一份 fixture 会话把桌面端跑三遍，抓「对话 / 工作台 / 空态」关键图，
+输出到 `bin/visual/`（不提交）：
+
+```bat
+node scripts\visual-check.mjs
+```
+
+它依赖 `bin\workbuddy-lite.exe` 和 `frontend` 的构建产物。注意：脚本不要给子进程加
+`windowsHide`——在这个宿主里会让 WebView2 初始化失败（错误码会被记到 app.log）。
+
+设计规范、组件盘点与改造记录见 [`docs/design-system.md`](docs/design-system.md)，
+改造前后截图在 `docs/ui/`。

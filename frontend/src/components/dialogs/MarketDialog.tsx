@@ -190,7 +190,7 @@ export function MarketDialog() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 border-t border-border px-4 py-2 text-[10.5px] text-muted-foreground">
+        <div className="flex items-center gap-2 border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
           <Blocks className="size-3" />
           <span>配置目录</span>
           <span className="truncate font-mono">{catalog.codebuddyDir || '—'}</span>
@@ -218,7 +218,7 @@ function Row({
   action: React.ReactNode
 }) {
   return (
-    <div className="flex items-start gap-2.5 rounded-xl border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20">
+    <div className="flex items-start gap-2.5 rounded-lg border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20">
       <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">{icon}</div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5 text-[12.5px] font-medium">

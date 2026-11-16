@@ -158,7 +158,7 @@ export function IntelligentUiLibraryDialog() {
                 return (
                   <div
                     key={widget.id}
-                    className="flex items-center gap-2.5 rounded-xl border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20"
+                    className="flex items-center gap-2.5 rounded-lg border border-border/70 px-2.5 py-2 transition-colors hover:border-border hover:bg-muted/20"
                   >
                     <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
                       <Icon className="size-4" />
@@ -169,7 +169,7 @@ export function IntelligentUiLibraryDialog() {
                         <Badge variant="secondary">{meta.label}</Badge>
                         {widget.spec.template && <Badge variant="outline">{widget.spec.template}</Badge>}
                       </div>
-                      <div className="text-[10.5px] text-muted-foreground">保存于 {timeText(widget.updatedAt)}</div>
+                      <div className="text-[11px] text-muted-foreground">保存于 {timeText(widget.updatedAt)}</div>
                     </div>
                     <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => setPreview(widget)}>
                       打开
@@ -207,7 +207,7 @@ export function IntelligentUiLibraryDialog() {
                     key={template.id}
                     type="button"
                     onClick={() => setDraft(template)}
-                    className={`flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors ${
+                    className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
                       activeDraft?.id === template.id ? 'border-primary bg-accent' : 'border-border/70 hover:bg-muted/30'
                     }`}
                   >
@@ -295,13 +295,13 @@ export function IntelligentUiLibraryDialog() {
                     <Input value={activeDraft.theme.fontFamily} onChange={(event) => updateTheme({ fontFamily: event.target.value })} />
                   </div>
 
-                  <div className="rounded-xl border border-border bg-muted/20 p-3">
+                  <div className="rounded-lg border border-border bg-muted/20 p-3">
                     <div className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                       <Palette className="size-3" />
                       预览
                     </div>
                     <div
-                      className="rounded-xl p-3"
+                      className="rounded-lg p-3"
                       style={{
                         background: activeDraft.theme.background,
                         color: activeDraft.theme.foreground,

@@ -13,7 +13,7 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-50 bg-[rgba(16,24,40,.32)] backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+        'fixed inset-0 z-50 bg-[color-mix(in_srgb,var(--ink)_32%,transparent)] backdrop-blur-[1px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         className,
       )}
       {...props}
@@ -32,14 +32,14 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-80px)] w-[min(780px,calc(100vw-64px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-[0_24px_60px_rgba(16,24,40,.24)] duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+          'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-80px)] w-[min(780px,calc(100vw-64px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-pop)] duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
           className,
         )}
         {...props}
       >
         {children}
         {showClose && (
-          <DialogPrimitive.Close className="absolute right-3 top-3 grid size-7 place-items-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:text-foreground">
+          <DialogPrimitive.Close className="absolute right-3 top-3 grid size-7 place-items-center rounded-md bg-transparent text-muted-foreground transition-colors hover:text-foreground">
             <X className="size-3.5" />
             <span className="sr-only">关闭</span>
           </DialogPrimitive.Close>
