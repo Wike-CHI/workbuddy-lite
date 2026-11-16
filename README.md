@@ -123,6 +123,24 @@ cwd 取第一个文件夹，其余文件夹会写进 prompt，让模型知道还
 set WORKBUDDY_LITE_DATA=D:\wbl-data && bin\workbuddy-lite.exe --demo
 ```
 
+## 浏览器工具（给 agent 用）
+
+右栏浏览器打开后，可以在工作空间里直接跑：
+
+```bash
+node tools/browser.mjs open https://example.com   # 打开
+node tools/browser.mjs state                      # {url,title,text}
+node tools/browser.mjs text                       # 只要文字
+node tools/browser.mjs click "button.submit"      # 点击
+node tools/browser.mjs type "#q" "hello"          # 输入
+node tools/browser.mjs press Enter                # 按键
+node tools/browser.mjs eval "document.title"      # 执行 JS
+node tools/browser.mjs shot out.png               # 截图（只拍页面）
+node tools/browser.mjs import-chrome              # 导入 Chrome 登录态（需先退出 Chrome）
+```
+
+端口默认读 `bin/data/port.txt`，也可以用 `WBL_PORT` 或 `--port=` 指定。
+
 ## 目录
 
 ```
