@@ -12,6 +12,7 @@ import {
   Sparkles,
   Trash2,
   Wand2,
+  Workflow,
 } from 'lucide-react'
 import * as React from 'react'
 
@@ -213,6 +214,7 @@ export function Sidebar() {
     const active = session.id === activeId
     const focused = cursor >= 0 && flat[cursor]?.id === session.id
     const sub = session.subagents
+    const wf = session.workflows
     const runs = active ? activeRuns : []
     return (
       <div
@@ -257,6 +259,17 @@ export function Sidebar() {
                     >
                       <Bot className="size-2.5" />
                       {sub.count}
+                    </span>
+                  )}
+                  {wf && wf.total > 0 && (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-0.5 rounded bg-[#e8f0fe] px-1 text-[9px] leading-[14px] text-[#1a73e8]"
+                      title={`工作流「${wf.name}」${wf.status ? ' · ' + wf.status : ''} · ${wf.done}/${wf.total}${
+                        wf.phase ? ' · ' + wf.phase : ''
+                      }`}
+                    >
+                      <Workflow className={cn('size-2.5', wf.running > 0 && 'animate-pulse')} />
+                      {wf.done}/{wf.total}
                     </span>
                   )}
                 </div>

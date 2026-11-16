@@ -184,6 +184,39 @@ NormalizedEvent normalizeUpdate(const json& update, const std::string& sessionId
   } else if (kind == "available_commands_update") {
     e.type = "commands";
     e.data["commands"] = jval(update, "availableCommands", json::array());
+  } else if (kind == "session_info_update") {
+    // 工作流把运行状态挂在 session_info_update 的 _meta 上
+    json meta = jval(update, "_meta", json::object());
+    std::string eventKind = jstr(meta, "codebuddy.ai/workflowEventKind");
+    if (eventKind.empty()) {
+      e.type = "raw_update";
+      e.data["kind"] = kind;
+      e.data["update"] = update;
+    } else {
+      e.type = "workflow";
+      e.data["kind"] = eventKind;
+      auto putStr = [&](const char* key, const char* out) {
+        std::string value = jstr(meta, key);
+        if (!value.empty()) e.data[out] = value;
+      };
+      auto putNum = [&](const char* key, const char* out) {
+        auto it = meta.find(key);
+        if (it != meta.end() && it->is_number()) e.data[out] = it->get<int64_t>();
+      };
+      putStr("codebuddy.ai/workflowRunId", "runId");
+      putStr("codebuddy.ai/workflowName", "name");
+      putStr("codebuddy.ai/workflowStatus", "status");
+      putStr("codebuddy.ai/workflowPhase", "phase");
+      putStr("codebuddy.ai/workflowAgentKey", "agentKey");
+      putStr("codebuddy.ai/workflowAgentLabel", "agentLabel");
+      putStr("codebuddy.ai/workflowAgentPhase", "agentPhase");
+      putStr("codebuddy.ai/workflowAgentError", "agentError");
+      putStr("codebuddy.ai/workflowError", "error");
+      putNum("codebuddy.ai/workflowAgentCount", "agentCount");
+      putNum("codebuddy.ai/workflowCachedCount", "cachedCount");
+      putNum("codebuddy.ai/workflowPhaseCount", "phaseCount");
+      putNum("codebuddy.ai/workflowAgentTokens", "agentTokens");
+    }
   } else if (kind == "interruption_request") {
     e.type = "interruption";
     e.data["interruptionId"] = jstr(update, "interruptionId");

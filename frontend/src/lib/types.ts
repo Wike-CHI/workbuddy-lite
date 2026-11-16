@@ -12,6 +12,18 @@ export interface SubagentStats {
   types?: string[]
 }
 
+export interface WorkflowStats {
+  name: string
+  status: string
+  done: number
+  total: number
+  running: number
+  phase?: string
+  cached?: number
+  phases?: number
+  error?: string
+}
+
 export interface SessionSummary {
   id: string
   title: string
@@ -22,6 +34,7 @@ export interface SessionSummary {
   usage?: SessionUsage
   messageCount?: number
   subagents?: SubagentStats
+  workflows?: WorkflowStats
 }
 
 export interface ModelInfo {

@@ -29,7 +29,7 @@ import { DiffPanel } from './DiffPanel'
 import { FilesPanel } from './FilesPanel'
 import { GitPanel } from './GitPanel'
 import { PlanPanel, TodosPanel, planInfo, todoStats } from './PlanPanel'
-import { TasksPanel, agentRuns } from './TasksPanel'
+import { TasksPanel, agentRuns, workflowRuns } from './TasksPanel'
 
 const TABS: { id: WorkbenchTab; label: string; icon: typeof FolderTree }[] = [
   { id: 'files', label: '文件', icon: FolderTree },
@@ -215,7 +215,9 @@ export function RightPanel() {
   const events = useChatStore((s) => s.events)
 
   const tasksRunning = React.useMemo(
-    () => agentRuns(events).filter((run) => run.status === 'in_progress' || run.status === 'running').length,
+    () =>
+      agentRuns(events).filter((run) => run.status === 'in_progress' || run.status === 'running').length +
+      workflowRuns(events).filter((run) => run.status === 'running').length,
     [events],
   )
   const todos = React.useMemo(() => todoStats(planInfo(events).entries), [events])

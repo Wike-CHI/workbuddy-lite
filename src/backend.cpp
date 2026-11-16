@@ -174,6 +174,7 @@ std::string pathKey(const std::string& path);
 
 // 会话里的子智能体统计（定义在后面）
 json subagentStatsOf(const json& session);
+json workflowStatsOf(const json& session);
 
 // 只允许读当前工作空间里的文件，挡住 ../ 和绝对路径逃逸
 bool isPathInside(const std::string& root, const std::string& target) {
@@ -1987,7 +1988,8 @@ void Backend::handleBootstrap(const httplib::Request&, httplib::Response& res) {
                             {"credits", numAt(u, "credits", 0)},
                             {"charged", numAt(u, "charged", 0)}}},
                           {"messageCount", msgCount},
-                          {"subagents", subagentStatsOf(s)}});
+                          {"subagents", subagentStatsOf(s)},
+                          {"workflows", workflowStatsOf(s)}});
       if (sessions.size() >= 500) break;
     }
     if (fresh_) lastId.clear();
@@ -2774,6 +2776,65 @@ json subagentStatsOf(const json& session) {
   out["running"] = running;
   out["steps"] = totalSteps;
   for (const auto& t : types) out["types"].push_back(t);
+  return out;
+}
+
+// 会话里跑过的工作流：名称、状态、完成/总数、当前阶段
+json workflowStatsOf(const json& session) {
+  json out = {{"name", ""},
+              {"status", ""},
+              {"done", 0},
+              {"total", 0},
+              {"running", 0},
+              {"phase", ""},
+              {"cached", 0},
+              {"phases", 0}};
+  auto eventsIt = session.find("events");
+  if (eventsIt == session.end() || !eventsIt->is_array()) return out;
+
+  std::string runId;
+  std::map<std::string, std::string> agents;
+  for (const auto& event : *eventsIt) {
+    if (!event.is_object() || jstr(event, "type") != "workflow") continue;
+    const json& data = event.contains("data") ? event["data"] : json::object();
+    std::string id = jstr(data, "runId");
+    if (runId.empty()) runId = id;
+    if (!id.empty() && id != runId) continue;  // 只看最后一次
+
+    std::string kind = jstr(data, "kind");
+    if (kind == "workflow_run_started" || kind == "workflow_run_finished") {
+      std::string name = jstr(data, "name");
+      if (!name.empty()) out["name"] = name;
+      std::string status = jstr(data, "status");
+      if (!status.empty()) out["status"] = status;
+      int total = static_cast<int>(numAt(data, "agentCount", 0));
+      if (total > 0) out["total"] = total;
+      out["cached"] = static_cast<int>(numAt(data, "cachedCount", 0));
+      out["phases"] = static_cast<int>(numAt(data, "phaseCount", 0));
+      if (data.contains("error")) out["error"] = data["error"];
+    } else if (kind == "workflow_phase_started" || kind == "workflow_phase_finished") {
+      std::string phase = jstr(data, "phase");
+      if (!phase.empty()) out["phase"] = phase;
+    } else if (kind.rfind("workflow_agent_", 0) == 0) {
+      std::string key = jstr(data, "agentKey");
+      if (key.empty()) continue;
+      std::string status = "completed";
+      if (kind == "workflow_agent_started") status = "running";
+      if (kind == "workflow_agent_cached") status = "cached";
+      if (data.contains("agentError")) status = "failed";
+      agents[key] = status;
+    }
+  }
+
+  int done = 0;
+  int running = 0;
+  for (const auto& entry : agents) {
+    if (entry.second == "completed" || entry.second == "cached") done++;
+    else if (entry.second == "running") running++;
+  }
+  out["done"] = done;
+  out["running"] = running;
+  if (out.value("total", 0) == 0) out["total"] = static_cast<int>(agents.size());
   return out;
 }
 }  // namespace
