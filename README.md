@@ -142,6 +142,33 @@ node tools/browser.mjs import-chrome              # 导入 Chrome 登录态（�
 端口默认读 `%LOCALAPPDATA%\WorkBuddyLite\port.txt`（启动时写入；设了 `WORKBUDDY_LITE_DATA` 就是那个目录），
 也可以用 `WBL_PORT` 或 `--port=` 指定。
 
+### browser-use（可选，直接复用 Chrome 登录态）
+
+装在一个隔离 venv 里，不碰系统 Python：`%LOCALAPPDATA%\WorkBuddyLite\browser-use\venv`
+（Python 3.12 + `browser-use==1.0.5`，PyPI 上目前最新就是 1.0.5）。
+
+```bash
+node tools/browser_use.mjs "在 GitHub 上看 browser-use 仓库有多少 star" --browser chrome
+node tools/browser_use.mjs "把本地 5173 的登录页点开" --browser chromium --headless
+node tools/browser_use.mjs "刷新后台并截图" --cdp http://127.0.0.1:9222
+node tools/browser_use.mjs --selftest      # 只检查环境
+```
+
+- 默认 `Browser('chrome')`：**接管你已经打开的 Chrome，登录态直接复用**。第一次要去
+  `chrome://inspect/#remote-debugging` 打开远程调试
+- `--browser chromium` 起独立浏览器（`--headless` 无界面）；`--cdp` 直连一个调试端口
+- 模型二选一：设 `BROWSER_USE_API_KEY`（官方网关，顺带用云浏览器），或 `--model "openai:gpt-4o"`
+  配 `OPENAI_API_KEY`，也可以是任意 pydantic-ai 模型串
+- 重装/升级：
+
+```bat
+uv venv "%LOCALAPPDATA%\WorkBuddyLite\browser-use\venv" --python 3.12
+uv pip install --python "%LOCALAPPDATA%\WorkBuddyLite\browser-use\venv\Scripts\python.exe" "browser-use==1.0.5"
+```
+
+它和我们自己的 WebView2 工具分工：轻量预览、点几下用 `tools/browser.mjs`（零依赖、面板可见）；
+需要真 Chrome 登录态、复杂交互、验证码时用 `tools/browser_use.mjs`。
+
 ## 目录
 
 ```
