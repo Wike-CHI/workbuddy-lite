@@ -286,7 +286,7 @@ export function RightPanel() {
           <button
             type="button"
             className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="收起右栏"
+            title="收起右栏（Ctrl B）"
             onClick={() => toggle(false)}
           >
             <ChevronsRight className="size-3.5" />

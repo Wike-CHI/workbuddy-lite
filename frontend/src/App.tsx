@@ -57,11 +57,24 @@ export default function App() {
   const boot = useChatStore((s) => s.boot)
   const agentError = useChatStore((s) => s.agentError)
   const init = useChatStore((s) => s.init)
+  const togglePanel = useWorkbenchStore((s) => s.toggle)
 
   useEffect(() => {
     void init()
     void useIntelligentUiStore.getState().load()
   }, [init])
+
+  // Ctrl/Cmd + B 开合右栏（和 VS Code / Codex 一致）
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
+      if (event.key.toLowerCase() !== 'b') return
+      event.preventDefault()
+      togglePanel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [togglePanel])
 
   // 截图/自动化验证用的钩子；正常使用不依赖它
   useEffect(() => {

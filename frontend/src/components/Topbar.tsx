@@ -157,7 +157,7 @@ export function Topbar() {
               <PanelRight className="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>工作台（文件 / 变更 / 计划 / Git / 浏览器）</TooltipContent>
+          <TooltipContent>工作台 · Ctrl+B（文件 / 变更 / 计划 / Git / 浏览器）</TooltipContent>
         </Tooltip>
       </div>
     </header>
