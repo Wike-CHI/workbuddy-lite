@@ -50,16 +50,16 @@ export function Topbar() {
   const ratio = contextSize > 0 ? Math.min(1, contextUsed / contextSize) : 0
 
   return (
-    <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border/70 px-5">
-      <div className="min-w-0">
+    <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border/70 px-4">
+      <div className="min-w-0 flex-1">
         <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">{activeTitle || '新会话'}</h1>
-        <div className="mt-0.5 flex items-center gap-1.5">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
           <button
             id="cwd-chip"
             type="button"
             onClick={() => setWorkspaceOpen(true)}
             title={`工作空间：${workspaceName || '—'}${workspaceFolders.length > 1 ? `（${workspaceFolders.length} 个文件夹）` : ''}\n${cwd || '—'}\n点击切换、编辑或新窗口打开`}
-            className="inline-flex max-w-[420px] items-center gap-1 truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="inline-flex min-w-0 max-w-[220px] items-center gap-1 truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
           >
             <FolderGit2 className="size-3 shrink-0" />
             <span className="truncate">{workspaceName || cwd || '—'}</span>
@@ -69,14 +69,16 @@ export function Topbar() {
             <ChevronDown className="size-2.5 shrink-0 opacity-60" />
           </button>
           {demo && (
-            <span className="rounded-md bg-warning-soft px-1.5 py-0.5 text-[10.5px] text-warning">演示模式</span>
+            <span className="shrink-0 whitespace-nowrap rounded-md bg-warning-soft px-1.5 py-0.5 text-[10.5px] text-warning">
+              演示模式
+            </span>
           )}
         </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
         <Select value={model} onValueChange={(value) => void setModel(value)}>
-          <SelectTrigger className="h-8 max-w-[210px]" title="模型（含积分倍率）">
+          <SelectTrigger className="h-8 max-w-[160px]" title="模型（含积分倍率）">
             <SelectValue placeholder={currentModel ? modelShort(currentModel) : '模型'} />
           </SelectTrigger>
           <SelectContent className="max-w-[300px]">
@@ -89,7 +91,7 @@ export function Topbar() {
         </Select>
 
         <Select value={mode} onValueChange={setMode}>
-          <SelectTrigger className="h-8 max-w-[120px]" title="权限模式">
+          <SelectTrigger className="h-8 max-w-[104px]" title="权限模式">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -101,9 +103,10 @@ export function Topbar() {
           </SelectContent>
         </Select>
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+        {!panelOpen && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
               <svg viewBox="0 0 36 36" className="size-6 -rotate-90">
                 <circle cx="18" cy="18" r="15" fill="none" stroke="#eef0f3" strokeWidth="4" />
                 <circle
@@ -125,7 +128,8 @@ export function Topbar() {
           <TooltipContent>
             上下文 {fmtNum(contextUsed)} / {fmtNum(contextSize)}
           </TooltipContent>
-        </Tooltip>
+          </Tooltip>
+        )}
 
         <Button
           id="credit-btn"

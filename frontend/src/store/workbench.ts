@@ -52,8 +52,11 @@ interface WorkbenchState {
   diffLoading: boolean
   browserUrl: string
   browserInfo: { url?: string; title?: string; loading?: boolean; canGoBack?: boolean; canGoForward?: boolean } | null
+  taskFocus: string
 
   toggle: (open?: boolean) => void
+  focusTask: (id: string) => void
+  clearTaskFocus: () => void
   setTab: (tab: WorkbenchTab) => void
   setWidth: (width: number) => void
   loadTree: (path?: string) => Promise<void>
@@ -86,6 +89,7 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   diffLoading: false,
   browserUrl: 'http://localhost:3000',
   browserInfo: null,
+  taskFocus: '',
 
   toggle: (open) => {
     const next = open === undefined ? !get().open : open
@@ -94,6 +98,13 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
     if (next && !get().git) void get().refreshGit()
     if (!next) postBrowser({ action: 'hide' })
   },
+
+  focusTask: (id) => {
+    set({ open: true, tab: 'tasks', taskFocus: id })
+    persist({ open: true, width: get().width, tab: 'tasks' })
+  },
+
+  clearTaskFocus: () => set({ taskFocus: '' }),
 
   setTab: (tab) => {
     set({ tab })

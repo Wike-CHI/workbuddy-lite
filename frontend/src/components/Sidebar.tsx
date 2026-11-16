@@ -1,5 +1,6 @@
 import {
   Blocks,
+  Bot,
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
@@ -17,12 +18,14 @@ import * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ProjectAiDialog } from '@/components/ProjectAiDialog'
+import { agentRuns } from '@/components/workbench/TasksPanel'
 import { fmtReset, leafOf, relTime } from '@/lib/format'
 import type { SessionSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
 import { useIntelligentUiStore } from '@/store/intelligentUi'
 import { useUiStore } from '@/store/ui'
+import { useWorkbenchStore } from '@/store/workbench'
 
 function pathKey(path: string) {
   return String(path || '')
@@ -42,6 +45,23 @@ function dayBucket(ts: number) {
 }
 
 const BUCKET_LABELS = ['今天', '昨天', '过去 7 天', '更早']
+
+function isRunningStatus(status: string) {
+  return status === 'in_progress' || status === 'running' || status === 'pending'
+}
+
+function highlightText(text: string, query: string) {
+  if (!query) return text
+  const index = text.toLowerCase().indexOf(query)
+  if (index < 0) return text
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark className="rounded bg-[#fff3bf] px-0.5 text-foreground">{text.slice(index, index + query.length)}</mark>
+      {text.slice(index + query.length)}
+    </>
+  )
+}
 
 export function Sidebar() {
   const sessions = useChatStore((s) => s.sessions)
@@ -63,6 +83,8 @@ export function Sidebar() {
   const model = useChatStore((s) => s.model)
   const models = useChatStore((s) => s.models)
   const quota = useChatStore((s) => s.quota)
+  const events = useChatStore((s) => s.events)
+  const focusTask = useWorkbenchStore((s) => s.focusTask)
   const setMarketOpen = useUiStore((s) => s.setMarketOpen)
   const setWorkspaceOpen = useUiStore((s) => s.setWorkspaceOpen)
   const setIntelligentUiOpen = useIntelligentUiStore((s) => s.setLibraryOpen)
@@ -72,6 +94,7 @@ export function Sidebar() {
   const [editingId, setEditingId] = React.useState<string | null>(null)
   const [draftTitle, setDraftTitle] = React.useState('')
   const [expandedOthers, setExpandedOthers] = React.useState<Set<string>>(() => new Set())
+  const [cursor, setCursor] = React.useState(-1)
 
   const currentKey = pathKey(cwd)
   const q = query.trim().toLowerCase()
@@ -119,6 +142,17 @@ export function Sidebar() {
   const quotaPct = quota?.percent !== undefined ? Number(quota.percent) : null
   const dotClass = demo ? 'bg-warning animate-pulse' : agentReady ? 'bg-success' : 'bg-destructive'
   const statusText = demo ? '演示模式（未接真实模型）' : agentReady ? 'CodeBuddy 已就绪' : status || '正在启动 Agent…'
+
+  const activeRuns = React.useMemo(() => agentRuns(events), [events])
+  const flat = React.useMemo(
+    () => [
+      ...currentSessions,
+      ...others.flatMap((group) => (expandedOthers.has(group.key) ? group.sessions : [])),
+    ],
+    [currentSessions, others, expandedOthers],
+  )
+
+  React.useEffect(() => setCursor(-1), [query])
 
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -175,61 +209,119 @@ export function Sidebar() {
     await deleteSession(session.id)
   }
 
-  const renderSession = (session: SessionSummary) => (
-    <div
-      key={session.id}
-      className={cn(
-        'group flex items-center gap-1 rounded-[8px] border border-transparent px-1.5 py-1.5 transition-colors',
-        session.id === activeId ? 'border-border bg-card shadow-sm' : 'hover:bg-[#f2f4f7]',
-      )}
-    >
-      {editingId === session.id ? (
-        <input
-          autoFocus
-          value={draftTitle}
-          onChange={(event) => setDraftTitle(event.target.value)}
-          onBlur={() => void commitRename(session.id)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-              event.preventDefault()
-              void commitRename(session.id)
-            } else if (event.key === 'Escape') {
-              setEditingId(null)
-            }
-          }}
-          className="h-6 min-w-0 flex-1 rounded border border-primary/40 bg-card px-1 text-[12px] text-foreground outline-none"
-        />
-      ) : (
-        <>
-          <button type="button" onClick={() => void openSession(session)} className="min-w-0 flex-1 text-left">
-            <div className="truncate text-[12px] font-medium text-foreground">{session.title || '新会话'}</div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <span>{relTime(session.updatedAt)}</span>
-              {session.model && <span className="truncate font-mono">{session.model}</span>}
-            </div>
-          </button>
-          <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
-            <button
-              type="button"
-              title="重命名"
-              onClick={() => startRename(session)}
-              className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <Pencil className="size-3" />
-            </button>
-            <button
-              type="button"
-              title="删除会话"
-              onClick={() => void confirmDelete(session)}
-              className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-destructive"
-            >
-              <Trash2 className="size-3" />
-            </button>
+  const renderSession = (session: SessionSummary) => {
+    const active = session.id === activeId
+    const focused = cursor >= 0 && flat[cursor]?.id === session.id
+    const sub = session.subagents
+    const runs = active ? activeRuns : []
+    return (
+      <div
+        key={session.id}
+        className={cn(
+          'group rounded-[8px] border border-transparent px-1.5 py-1.5 transition-colors',
+          active ? 'border-border bg-card shadow-sm' : 'hover:bg-[#f2f4f7]',
+          focused && !active && 'border-primary/30 bg-[#f2f4f7]',
+        )}
+      >
+        <div className="flex items-center gap-1">
+          {editingId === session.id ? (
+            <input
+              autoFocus
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              onBlur={() => void commitRename(session.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  void commitRename(session.id)
+                } else if (event.key === 'Escape') {
+                  setEditingId(null)
+                }
+              }}
+              className="h-6 min-w-0 flex-1 rounded border border-primary/40 bg-card px-1 text-[12px] text-foreground outline-none"
+            />
+          ) : (
+            <>
+              <button type="button" onClick={() => void openSession(session)} className="min-w-0 flex-1 text-left">
+                <div className="flex items-center gap-1">
+                  <span className="truncate text-[12px] font-medium text-foreground">
+                    {highlightText(session.title || '新会话', q)}
+                  </span>
+                  {sub && sub.running > 0 && (
+                    <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-[#8250df]" />
+                  )}
+                  {sub && sub.count > 0 && (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-0.5 rounded bg-[#f3eefe] px-1 text-[9px] leading-[14px] text-[#8250df]"
+                      title={`${sub.count} 个子智能体${sub.running ? ` · ${sub.running} 个进行中` : ''} · 共 ${sub.steps} 步`}
+                    >
+                      <Bot className="size-2.5" />
+                      {sub.count}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span>{relTime(session.updatedAt)}</span>
+                  {!!session.messageCount && <span>{session.messageCount} 条</span>}
+                  {session.model && <span className="truncate font-mono">{session.model}</span>}
+                </div>
+              </button>
+              <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  type="button"
+                  title="重命名"
+                  onClick={() => startRename(session)}
+                  className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  <Pencil className="size-3" />
+                </button>
+                <button
+                  type="button"
+                  title="删除会话"
+                  onClick={() => void confirmDelete(session)}
+                  className="grid size-5 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-destructive"
+                >
+                  <Trash2 className="size-3" />
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {active && runs.length > 0 && (
+          <div className="ml-1.5 mt-1 space-y-0.5 border-l border-[#e6dcfb] pl-2">
+            {runs.slice(0, 4).map((run) => (
+              <button
+                key={run.id}
+                type="button"
+                onClick={() => focusTask(run.id)}
+                title="在右侧「任务」面板里查看这个子智能体"
+                className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-[10px] text-muted-foreground hover:bg-[#f7f2ff] hover:text-foreground"
+              >
+                <span
+                  className={cn(
+                    'size-1.5 shrink-0 rounded-full',
+                    isRunningStatus(run.status) ? 'animate-pulse bg-[#0969da]' : 'bg-[#1a7f37]',
+                  )}
+                />
+                <span className="truncate">{run.title}</span>
+                <span className="ml-auto shrink-0 font-mono">{run.tools} 步</span>
+              </button>
+            ))}
+            {runs.length > 4 && (
+              <button
+                type="button"
+                onClick={() => focusTask(runs[4].id)}
+                className="px-1 text-[10px] text-[#8250df] hover:underline"
+              >
+                还有 {runs.length - 4} 个…
+              </button>
+            )}
           </div>
-        </>
-      )}
-    </div>
-  )
+        )}
+      </div>
+    )
+  }
 
   return (
     <aside className="flex w-[264px] shrink-0 flex-col border-r border-border bg-sidebar px-3 pb-2.5 pt-3">
@@ -272,7 +364,23 @@ export function Sidebar() {
             id="session-search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索会话"
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return
+              if (event.key === 'ArrowDown') {
+                event.preventDefault()
+                setCursor((prev) => Math.min(flat.length - 1, prev + 1))
+              } else if (event.key === 'ArrowUp') {
+                event.preventDefault()
+                setCursor((prev) => Math.max(-1, prev - 1))
+              } else if (event.key === 'Enter' && cursor >= 0 && flat[cursor]) {
+                event.preventDefault()
+                void openSession(flat[cursor])
+              } else if (event.key === 'Escape') {
+                setQuery('')
+                setCursor(-1)
+              }
+            }}
+            placeholder={`搜索 ${sessions.length} 个会话`}
             className="h-8 pl-7 text-[12px]"
           />
         </div>
@@ -300,14 +408,31 @@ export function Sidebar() {
 
         {!buckets.length && !others.length && (
           <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">
-            {q ? '没有匹配的会话' : '还没有会话，点上方「新会话」开始'}
+            {q ? (
+              <button type="button" className="hover:text-foreground hover:underline" onClick={() => setQuery('')}>
+                没有匹配的会话，清除搜索
+              </button>
+            ) : (
+              '还没有会话，点上方「新会话」开始'
+            )}
           </div>
         )}
 
         {others.length > 0 && (
           <div className="mt-1 border-t border-border/70 pt-2">
-            <div className="px-1.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              其他项目
+            <div className="flex items-center justify-between px-1.5 py-1">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">其他项目</span>
+              <button
+                type="button"
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+                onClick={() =>
+                  setExpandedOthers((prev) =>
+                    prev.size ? new Set() : new Set(others.map((group) => group.key)),
+                  )
+                }
+              >
+                {expandedOthers.size ? '全部收起' : '全部展开'}
+              </button>
             </div>
             {others.map((group) => {
               const isOpen = expandedOthers.has(group.key)

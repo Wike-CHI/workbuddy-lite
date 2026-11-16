@@ -172,6 +172,9 @@ std::string canonicalPath(const std::string& path) {
 
 std::string pathKey(const std::string& path);
 
+// 会话里的子智能体统计（定义在后面）
+json subagentStatsOf(const json& session);
+
 // 只允许读当前工作空间里的文件，挡住 ../ 和绝对路径逃逸
 bool isPathInside(const std::string& root, const std::string& target) {
   std::string r = pathKey(canonicalPath(root));
@@ -1983,7 +1986,8 @@ void Backend::handleBootstrap(const httplib::Request&, httplib::Response& res) {
                             {"size", jval(u, "size", json(0))},
                             {"credits", numAt(u, "credits", 0)},
                             {"charged", numAt(u, "charged", 0)}}},
-                          {"messageCount", msgCount}});
+                          {"messageCount", msgCount},
+                          {"subagents", subagentStatsOf(s)}});
       if (sessions.size() >= 500) break;
     }
     if (fresh_) lastId.clear();
@@ -2721,6 +2725,58 @@ void Backend::handleBrowserImport(const httplib::Request&, httplib::Response& re
   res.set_header("Cache-Control", "no-store");
   res.set_content(dumpJson(out), "application/json; charset=utf-8");
 }
+
+// 一个会话里跑了多少子智能体、几个还在跑、一共多少步
+namespace {
+json subagentStatsOf(const json& session) {
+  json out = {{"count", 0}, {"running", 0}, {"steps", 0}, {"types", json::array()}};
+  auto eventsIt = session.find("events");
+  if (eventsIt == session.end() || !eventsIt->is_array()) return out;
+
+  std::map<std::string, std::string> status;  // parentId -> 最后状态
+  std::map<std::string, int> steps;
+  std::map<std::string, bool> parents;
+  std::set<std::string> types;
+
+  for (const auto& event : *eventsIt) {
+    if (!event.is_object()) continue;
+    const json& data = event.contains("data") ? event["data"] : json::object();
+    std::string type = jstr(event, "type");
+    std::string id = jstr(data, "id");
+    if (type == "tool" && (data.value("isSubagent", false) || !jstr(data, "subagentType").empty())) {
+      if (!id.empty()) {
+        parents[id] = true;
+        status[id] = jstr(data, "status", "in_progress");
+        std::string stype = jstr(data, "subagentType");
+        if (!stype.empty()) types.insert(stype);
+      }
+    }
+    std::string parent = jstr(data, "parentToolCallId");
+    if (!parent.empty()) {
+      parents[parent] = true;
+      if (type == "tool" || type == "tool_update") steps[parent]++;
+      if (type == "tool_update") {
+        std::string s = jstr(data, "status");
+        if (!s.empty()) status[parent] = s;
+      }
+    }
+  }
+
+  int running = 0;
+  int totalSteps = 0;
+  for (const auto& entry : parents) {
+    std::string s = status[entry.first];
+    if (s == "in_progress" || s == "running" || s == "pending") running++;
+  }
+  for (const auto& entry : steps) totalSteps += entry.second;
+
+  out["count"] = static_cast<int>(parents.size());
+  out["running"] = running;
+  out["steps"] = totalSteps;
+  for (const auto& t : types) out["types"].push_back(t);
+  return out;
+}
+}  // namespace
 
 json Backend::renameWorkspaceByFolder(const std::string& path, const std::string& name) {
   if (path.empty() || name.empty()) return json::object();

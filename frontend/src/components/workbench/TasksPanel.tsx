@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import type { AcpEvent } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
+import { useWorkbenchStore } from '@/store/workbench'
 
 export interface AgentRun {
   id: string
@@ -115,6 +116,16 @@ export function TasksPanel() {
   const events = useChatStore((s) => s.events)
   const runs = React.useMemo(() => agentRuns(events), [events])
   const [openIds, setOpenIds] = React.useState<string[]>([])
+  const taskFocus = useWorkbenchStore((s) => s.taskFocus)
+
+  // 侧栏点某个子智能体时，展开并滚到它
+  React.useEffect(() => {
+    if (!taskFocus) return
+    setOpenIds((prev) => (prev.includes(taskFocus) ? prev : [...prev, taskFocus]))
+    requestAnimationFrame(() => {
+      document.getElementById('task-' + taskFocus)?.scrollIntoView({ block: 'nearest' })
+    })
+  }, [taskFocus])
 
   if (!runs.length) {
     return (
@@ -133,7 +144,7 @@ export function TasksPanel() {
       {sorted.map((run) => {
         const open = openIds.includes(run.id)
         return (
-          <div key={run.id} className="mb-1.5 rounded-lg border border-border/70 bg-card">
+          <div key={run.id} id={'task-' + run.id} className="mb-1.5 rounded-lg border border-border/70 bg-card">
             <button
               type="button"
               className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"

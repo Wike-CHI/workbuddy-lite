@@ -5,6 +5,13 @@ export interface SessionUsage {
   charged?: number
 }
 
+export interface SubagentStats {
+  count: number
+  running: number
+  steps: number
+  types?: string[]
+}
+
 export interface SessionSummary {
   id: string
   title: string
@@ -14,6 +21,7 @@ export interface SessionSummary {
   updatedAt: number
   usage?: SessionUsage
   messageCount?: number
+  subagents?: SubagentStats
 }
 
 export interface ModelInfo {
