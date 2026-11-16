@@ -134,19 +134,33 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
   const phaseStatus = (name: string) => run.phases.find((phase) => phase.name === name)?.status || 'running'
   const phaseAgents = openPhase ? run.agents.filter((agent) => agent.phase === openPhase) : []
 
-  const retry = async (agent: WorkflowAgentView) => {
+  const runRetry = async (agent: WorkflowAgentView) => {
     const detail = agent.error ? `：${agent.error}` : ''
-    if (
-      !window.confirm(
-        `重跑「${agent.label}」？\n\n会把失败信息发给 agent，让它用 workflow control 只重跑这个代理（会消耗积分）。`,
-      )
-    )
-      return
     const prompt =
       `工作流「${run.name}」(runId: ${run.id}) 的阶段「${agent.phase || '未标注'}」中代理「${agent.label}」失败了${detail}。` +
       '请用 workflow control 只重跑这个失败代理，已经完成的阶段和代理不要重跑。'
-    await send(prompt)
-    toast.success('已发给 agent，进度会回到这个面板')
+    try {
+      await send(prompt)
+      toast.success('已发给 agent，进度会回到这个面板')
+    } catch (error) {
+      toast.error('发送失败：' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  // 二次确认走 toast，不弹系统对话框
+  const askRetry = (agent: WorkflowAgentView) => {
+    toast(`重跑「${agent.label}」？`, {
+      description: '只让 agent 用 workflow control 重跑这个失败代理，会消耗积分',
+      duration: 10000,
+      action: {
+        label: '重跑',
+        onClick: () => void runRetry(agent),
+      },
+      cancel: {
+        label: '取消',
+        onClick: () => undefined,
+      },
+    })
   }
 
   return (
@@ -220,7 +234,7 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
                   <button
                     type="button"
                     className="shrink-0 rounded bg-destructive/10 px-1 py-0.5 text-[9px] text-destructive hover:bg-destructive/20"
-                    onClick={() => void retry(agent)}
+                    onClick={() => askRetry(agent)}
                   >
                     重跑
                   </button>
