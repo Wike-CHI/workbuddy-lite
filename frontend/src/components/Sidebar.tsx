@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ProjectAiDialog } from '@/components/ProjectAiDialog'
 import { agentRuns } from '@/components/workbench/TasksPanel'
+import { confirmToast } from '@/lib/confirmToast'
 import { fmtReset, leafOf, relTime } from '@/lib/format'
 import type { SessionSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -206,8 +207,15 @@ export function Sidebar() {
   }
 
   const confirmDelete = async (session: SessionSummary) => {
-    if (!window.confirm(`删除会话「${session.title || '新会话'}」？\n删除后无法恢复。`)) return
-    await deleteSession(session.id)
+    confirmToast({
+      title: `删除会话「${session.title || '新会话'}」？`,
+      description: '删除后无法恢复，会话记录会从列表里移除',
+      confirmLabel: '删除',
+      danger: true,
+      onConfirm: async () => {
+        await deleteSession(session.id)
+      },
+    })
   }
 
   const renderSession = (session: SessionSummary) => {

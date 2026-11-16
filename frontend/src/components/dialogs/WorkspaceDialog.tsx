@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { leafOf } from '@/lib/format'
+import { confirmToast } from '@/lib/confirmToast'
 import type { Workspace } from '@/lib/types'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
@@ -418,9 +419,16 @@ export function WorkspaceDialog() {
                           size="sm"
                           className="h-7 w-7 px-0 text-muted-foreground hover:text-destructive"
                           title="删除工作空间（不删文件夹）"
-                          onClick={async () => {
-                            if (!window.confirm(`删除工作空间「${workspace.label}」？\n只删除分组，文件夹和会话都不动。`)) return
-                            await removeWorkspace(workspace.id!)
+                          onClick={() => {
+                            confirmToast({
+                              title: `删除工作空间「${workspace.label}」？`,
+                              description: '只删除分组，文件夹和会话都不动',
+                              confirmLabel: '删除',
+                              danger: true,
+                              onConfirm: async () => {
+                                await removeWorkspace(workspace.id!)
+                              },
+                            })
                           }}
                         >
                           <Trash2 className="size-3.5" />
