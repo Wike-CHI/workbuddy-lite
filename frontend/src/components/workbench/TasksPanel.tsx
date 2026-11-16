@@ -1,5 +1,6 @@
 import { Bot, ChevronDown, ChevronRight, Clock, Layers, Workflow } from 'lucide-react'
 import * as React from 'react'
+import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
 import type { AcpEvent } from '@/lib/types'
@@ -14,6 +15,7 @@ export interface WorkflowAgentView {
   status: string
   tokens: number
   error?: string
+  output: string
 }
 
 export interface WorkflowRunView {
@@ -88,6 +90,7 @@ export function workflowRuns(events: AcpEvent[]): WorkflowRunView[] {
         status,
         tokens: Number(data.agentTokens || 0),
         error: data.agentError ? String(data.agentError) : undefined,
+        output: '',
       }
       const index = run.agents.findIndex((item) => item.key === key)
       if (index >= 0) run.agents[index] = { ...run.agents[index], ...agent }
@@ -95,14 +98,56 @@ export function workflowRuns(events: AcpEvent[]): WorkflowRunView[] {
     }
   }
 
+  // 如果子代理的流式文本带了 workflowAgentKey，就归到对应代理名下
+  for (const event of events) {
+    const key = event.data?.workflowAgentKey
+    if (!key) continue
+    if (event.type !== 'text' && event.type !== 'tool') continue
+    const run = runs.get(String(event.data?.runId || ''))
+    if (!run) continue
+    const agent = run.agents.find((item) => item.key === String(key))
+    if (!agent) continue
+    if (event.type === 'text') {
+      const text = String(event.data?.text || '')
+      if (text.trim() && agent.output.length < 4000) agent.output += text
+    } else if (event.type === 'tool') {
+      const title = String(event.data?.title || '工具')
+      if (agent.output.length < 4000) agent.output += `\n→ ${title}`
+    }
+  }
+
   return [...runs.values()]
 }
 
 function WorkflowCard({ run }: { run: WorkflowRunView }) {
+  const send = useChatStore((s) => s.send)
+  const [openPhase, setOpenPhase] = React.useState<string | null>(null)
+
   const done = run.agents.filter((agent) => agent.status === 'completed' || agent.status === 'cached').length
   const total = run.agentCount || run.agents.length
   const running = run.agents.filter((agent) => agent.status === 'running').length
   const pct = total ? Math.round((done / total) * 100) : 0
+
+  const phaseNames = Array.from(
+    new Set([...run.phases.map((phase) => phase.name), ...run.agents.map((agent) => agent.phase).filter(Boolean)]),
+  )
+  const phaseStatus = (name: string) => run.phases.find((phase) => phase.name === name)?.status || 'running'
+  const phaseAgents = openPhase ? run.agents.filter((agent) => agent.phase === openPhase) : []
+
+  const retry = async (agent: WorkflowAgentView) => {
+    const detail = agent.error ? `：${agent.error}` : ''
+    if (
+      !window.confirm(
+        `重跑「${agent.label}」？\n\n会把失败信息发给 agent，让它用 workflow control 只重跑这个代理（会消耗积分）。`,
+      )
+    )
+      return
+    const prompt =
+      `工作流「${run.name}」(runId: ${run.id}) 的阶段「${agent.phase || '未标注'}」中代理「${agent.label}」失败了${detail}。` +
+      '请用 workflow control 只重跑这个失败代理，已经完成的阶段和代理不要重跑。'
+    await send(prompt)
+    toast.success('已发给 agent，进度会回到这个面板')
+  }
 
   return (
     <div className="mb-1.5 rounded-lg border border-[#cfe0ff] bg-[#f5f9ff]">
@@ -121,47 +166,112 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
           <div className="h-full rounded-full bg-[#1a73e8] transition-all" style={{ width: `${pct}%` }} />
         </div>
       </div>
-      {run.phases.length > 0 && (
+
+      {phaseNames.length > 0 && (
         <div className="flex flex-wrap gap-1 px-2 pb-1.5">
-          {run.phases.map((phase) => (
-            <span
-              key={phase.name}
-              className={cn(
-                'rounded px-1 py-0.5 text-[9.5px]',
-                phase.status === 'finished' ? 'bg-[#e6f4ea] text-[#1a7f37]' : 'bg-[#fef7e0] text-[#9a6700]',
-              )}
-            >
-              {phase.name}
-            </span>
-          ))}
+          {phaseNames.map((name) => {
+            const active = openPhase === name
+            const finished = phaseStatus(name) === 'finished'
+            const count = run.agents.filter((agent) => agent.phase === name).length
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => setOpenPhase(active ? null : name)}
+                className={cn(
+                  'rounded px-1 py-0.5 text-[9.5px] transition-colors',
+                  finished ? 'bg-[#e6f4ea] text-[#1a7f37]' : 'bg-[#fef7e0] text-[#9a6700]',
+                  active && 'ring-1 ring-[#1a73e8]',
+                )}
+                title={count ? `看 ${name} 阶段的 ${count} 个代理` : name}
+              >
+                {name}
+                {count > 0 && <span className="ml-0.5 opacity-60">{count}</span>}
+              </button>
+            )
+          })}
         </div>
       )}
-      {run.agents.length > 0 && (
-        <div className="space-y-0.5 border-t border-[#dce8fb] px-2 py-1">
-          {run.agents.slice(0, 6).map((agent) => (
-            <div key={agent.key} className="flex items-center gap-1.5 text-[10px]">
-              <span
-                className={cn(
-                  'size-1.5 shrink-0 rounded-full',
-                  agent.status === 'running'
-                    ? 'animate-pulse bg-[#1a73e8]'
-                    : agent.status === 'failed'
-                      ? 'bg-destructive'
-                      : agent.status === 'cached'
-                        ? 'bg-[#9aa0a6]'
-                        : 'bg-[#1a7f37]',
+
+      {openPhase ? (
+        <div className="space-y-1 border-t border-[#dce8fb] px-2 py-1.5">
+          <div className="text-[9.5px] text-muted-foreground">阶段「{openPhase}」的代理</div>
+          {!phaseAgents.length && <div className="text-[10px] text-muted-foreground">这个阶段还没有代理记录</div>}
+          {phaseAgents.map((agent) => (
+            <div key={agent.key} className="rounded border border-[#dce8fb] bg-white/70 px-1.5 py-1">
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <span
+                  className={cn(
+                    'size-1.5 shrink-0 rounded-full',
+                    agent.status === 'running'
+                      ? 'animate-pulse bg-[#1a73e8]'
+                      : agent.status === 'failed'
+                        ? 'bg-destructive'
+                        : agent.status === 'cached'
+                          ? 'bg-[#9aa0a6]'
+                          : 'bg-[#1a7f37]',
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate font-medium">{agent.label}</span>
+                {agent.tokens > 0 && (
+                  <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{agent.tokens} tok</span>
                 )}
-              />
-              <span className="min-w-0 flex-1 truncate">{agent.label}</span>
-              {agent.phase && <span className="shrink-0 text-muted-foreground">{agent.phase}</span>}
-              {agent.tokens > 0 && <span className="shrink-0 font-mono text-muted-foreground">{agent.tokens}</span>}
+                {agent.status === 'failed' && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded bg-destructive/10 px-1 py-0.5 text-[9px] text-destructive hover:bg-destructive/20"
+                    onClick={() => void retry(agent)}
+                  >
+                    重跑
+                  </button>
+                )}
+              </div>
+              {agent.error && (
+                <div className="mt-0.5 whitespace-pre-wrap break-words text-[9.5px] text-destructive">{agent.error}</div>
+              )}
+              {agent.output ? (
+                <div className="mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[9.5px] leading-4 text-muted-foreground">
+                  {agent.output}
+                </div>
+              ) : (
+                !agent.error && (
+                  <div className="mt-0.5 text-[9.5px] text-muted-foreground/70">
+                    {agent.status === 'running' ? '还在跑…' : '没有回传文本（CLI 只上报状态和 token）'}
+                  </div>
+                )
+              )}
             </div>
           ))}
-          {run.agents.length > 6 && (
-            <div className="text-[9.5px] text-muted-foreground">还有 {run.agents.length - 6} 个代理…</div>
-          )}
         </div>
+      ) : (
+        run.agents.length > 0 && (
+          <div className="space-y-0.5 border-t border-[#dce8fb] px-2 py-1">
+            {run.agents.slice(0, 6).map((agent) => (
+              <div key={agent.key} className="flex items-center gap-1.5 text-[10px]">
+                <span
+                  className={cn(
+                    'size-1.5 shrink-0 rounded-full',
+                    agent.status === 'running'
+                      ? 'animate-pulse bg-[#1a73e8]'
+                      : agent.status === 'failed'
+                        ? 'bg-destructive'
+                        : agent.status === 'cached'
+                          ? 'bg-[#9aa0a6]'
+                          : 'bg-[#1a7f37]',
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate">{agent.label}</span>
+                {agent.phase && <span className="shrink-0 text-muted-foreground">{agent.phase}</span>}
+                {agent.tokens > 0 && <span className="shrink-0 font-mono text-muted-foreground">{agent.tokens}</span>}
+              </div>
+            ))}
+            {run.agents.length > 6 && (
+              <div className="text-[9.5px] text-muted-foreground">还有 {run.agents.length - 6} 个代理…</div>
+            )}
+          </div>
+        )
       )}
+
       {run.error && <div className="px-2 pb-1 text-[9.5px] text-destructive">{run.error}</div>}
     </div>
   )
