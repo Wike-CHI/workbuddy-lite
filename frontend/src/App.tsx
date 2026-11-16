@@ -9,11 +9,13 @@ import { MarketDialog } from '@/components/dialogs/MarketDialog'
 import { IntelligentUiLibraryDialog } from '@/components/intelligent/IntelligentUiLibraryDialog'
 import { UsageDialog } from '@/components/dialogs/UsageDialog'
 import { WorkspaceDialog } from '@/components/dialogs/WorkspaceDialog'
+import { RightPanel } from '@/components/workbench/RightPanel'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
 import { useIntelligentUiStore } from '@/store/intelligentUi'
+import { useWorkbenchStore } from '@/store/workbench'
 import type { ChatMessage } from '@/lib/types'
 
 // ThreadMessageLike 的 content 允许 data-* 部件，这里原样交给 assistant-ui 转换。
@@ -71,6 +73,14 @@ export default function App() {
       openWorkspace: () => useUiStore.getState().setWorkspaceOpen(true),
       openMarket: () => useUiStore.getState().setMarketOpen(true),
       openIuiLibrary: (tab: 'saved' | 'templates' = 'saved') => useIntelligentUiStore.getState().setLibraryOpen(true, tab),
+      openWorkbench: (tab: 'files' | 'diff' | 'plan' | 'todos' | 'git' | 'tasks' | 'browser' = 'files') => {
+        const store = useWorkbenchStore.getState()
+        store.toggle(true)
+        store.setTab(tab)
+      },
+      browse: (url: string) => {
+        useWorkbenchStore.getState().setBrowserUrl(url)
+      },
     }
   }, [])
 
@@ -100,6 +110,7 @@ export default function App() {
             <ChatThread />
             <Composer />
           </main>
+          <RightPanel />
         </div>
         <UsageDialog />
         <WorkspaceDialog />

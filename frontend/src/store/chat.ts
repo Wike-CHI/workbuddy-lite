@@ -118,6 +118,7 @@ interface ChatState {
   attachments: Attachment[]
   connectorRefs: string[]
   history: string[]
+  events: AcpEvent[]
   turnCredit: { nominal: number; actual: number } | null
 
   init: () => Promise<void>
@@ -171,6 +172,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   messages: [],
   running: false,
   lastSeq: 0,
+  events: [],
   model: readPrefs().model || '',
   mode: readPrefs().mode || 'fullAccess',
   modelTouched: !!readPrefs().model,
@@ -300,7 +302,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       set({ commands: list as AcpCommand[] })
     }
 
-    set({ messages: applyEvent(get().messages, ev), lastSeq: ev.seq })
+    set({
+      messages: applyEvent(get().messages, ev),
+      events: [...get().events, ev].slice(-600),
+      lastSeq: ev.seq,
+    })
 
     if (ev.type === 'usage') {
       const nominal = Number(ev.data.originalCredit ?? ev.data.credit ?? 0)
@@ -330,6 +336,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         activeId: id,
         activeTitle: detail.title || '新会话',
         messages: eventsToMessages(detail.events || []),
+        events: (detail.events || []).map((e, index) => ({
+          seq: index,
+          type: e.type,
+          sessionId: id,
+          data: e.data || {},
+        })),
         running: false,
         model: detail.model || get().model,
         mode: detail.mode || get().mode,
@@ -376,6 +388,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeId: null,
       activeTitle: '新会话',
       messages: [],
+      events: [],
       running: false,
       history: [],
       attachments: [],

@@ -1,11 +1,13 @@
-import { ChevronDown, FolderGit2, Sparkles } from 'lucide-react'
+import { ChevronDown, FolderGit2, PanelRight, Sparkles } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { fmtCredits, fmtNum, fmtReset, modelShort } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
+import { useWorkbenchStore } from '@/store/workbench'
 
 const MODES = [
   { value: 'default', label: '每次询问' },
@@ -34,6 +36,8 @@ export function Topbar() {
   const contextSize = useChatStore((s) => s.contextSize)
   const setUsageOpen = useUiStore((s) => s.setUsageOpen)
   const setWorkspaceOpen = useUiStore((s) => s.setWorkspaceOpen)
+  const panelOpen = useWorkbenchStore((s) => s.open)
+  const togglePanel = useWorkbenchStore((s) => s.toggle)
 
   const currentModel = models.find((m) => m.id === model)
   const modelOptions = models.length
@@ -140,6 +144,21 @@ export function Topbar() {
           <span>{fmtCredits(credits)}</span>
           <span className="text-muted-foreground">积分</span>
         </Button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className={cn('size-8 shrink-0', panelOpen && 'border-primary/40 bg-accent text-accent-foreground')}
+              onClick={() => togglePanel()}
+            >
+              <PanelRight className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>工作台（文件 / 变更 / 计划 / Git / 浏览器）</TooltipContent>
+        </Tooltip>
       </div>
     </header>
   )

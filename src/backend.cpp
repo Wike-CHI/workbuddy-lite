@@ -374,6 +374,194 @@ std::vector<std::string> foldersOf(const json& ws) {
   return out;
 }
 
+// ---------- 外部命令（git） ----------
+std::string joinPathSafe(const std::string& a, const std::string& b);
+
+struct CmdResult {
+  bool ok = false;
+  int code = -1;
+  std::string out;
+};
+
+std::wstring quoteArg(const std::wstring& a) {
+  if (a.find_first_of(L" \t\"") == std::wstring::npos) return a;
+  std::wstring out = L"\"";
+  int backslashes = 0;
+  for (wchar_t c : a) {
+    if (c == L'\\') {
+      ++backslashes;
+      continue;
+    }
+    if (c == L'"') {
+      out.append(static_cast<size_t>(backslashes) * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+      continue;
+    }
+    if (backslashes) {
+      out.append(static_cast<size_t>(backslashes), L'\\');
+      backslashes = 0;
+    }
+    out.push_back(c);
+  }
+  if (backslashes) out.append(static_cast<size_t>(backslashes) * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+// 跑一个短命命令并回收输出（git status/diff 之类），超时就杀进程
+CmdResult runCapture(const std::vector<std::string>& args, const std::string& cwd, int timeoutMs = 20000) {
+  CmdResult r;
+  if (args.empty()) return r;
+  std::wstring cmd;
+  for (const auto& a : args) {
+    if (!cmd.empty()) cmd += L' ';
+    cmd += quoteArg(utf8ToWide(a));
+  }
+
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+  HANDLE rd = nullptr;
+  HANDLE wr = nullptr;
+  if (!CreatePipe(&rd, &wr, &sa, 0)) return r;
+  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  si.hStdOutput = wr;
+  si.hStdError = wr;
+
+  PROCESS_INFORMATION pi{};
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  std::wstring wcwd = utf8ToWide(cwd);
+  BOOL started = CreateProcessW(nullptr, buf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
+  CloseHandle(wr);
+  if (!started) {
+    CloseHandle(rd);
+    return r;
+  }
+
+  const DWORD start = GetTickCount();
+  char chunk[4096];
+  for (;;) {
+    DWORD avail = 0;
+    if (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+      DWORD n = 0;
+      if (!ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) || n == 0) break;
+      if (r.out.size() < 2u * 1024 * 1024) r.out.append(chunk, n);
+      continue;
+    }
+    DWORD w = WaitForSingleObject(pi.hProcess, 30);
+    if (w == WAIT_OBJECT_0) {
+      DWORD n = 0;
+      while (ReadFile(rd, chunk, sizeof(chunk), &n, nullptr) && n > 0) {
+        if (r.out.size() < 2u * 1024 * 1024) r.out.append(chunk, n);
+      }
+      break;
+    }
+    if (GetTickCount() - start > static_cast<DWORD>(timeoutMs)) {
+      TerminateProcess(pi.hProcess, 1);
+      CloseHandle(rd);
+      CloseHandle(pi.hProcess);
+      CloseHandle(pi.hThread);
+      return r;
+    }
+  }
+  DWORD code = 1;
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(rd);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  r.code = static_cast<int>(code);
+  r.ok = code == 0;
+  return r;
+}
+
+bool isGitRepo(const std::string& dir) {
+  auto r = runCapture({"git", "-C", dir, "rev-parse", "--is-inside-work-tree"}, dir, 8000);
+  return r.ok && r.out.find("true") != std::string::npos;
+}
+
+json gitStatusFor(const std::string& dir) {
+  json out = {{"path", dir},
+              {"label", leafName(dir)},
+              {"isRepo", false},
+              {"branch", ""},
+              {"files", json::array()}};
+  if (!isGitRepo(dir)) return out;
+  out["isRepo"] = true;
+
+  auto br = runCapture({"git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD"}, dir, 8000);
+  if (br.ok) out["branch"] = trimStr(br.out);
+
+  auto st = runCapture({"git", "-C", dir, "-c", "core.quotePath=false", "status", "--porcelain=v1",
+                        "--untracked-files=all"},
+                       dir, 15000);
+  if (!st.ok) return out;
+
+  json files = json::array();
+  std::istringstream iss(st.out);
+  std::string line;
+  while (std::getline(iss, line)) {
+    if (line.size() < 4) continue;
+    std::string code = line.substr(0, 2);
+    std::string path = line.substr(3);
+    size_t arrow = path.find(" -> ");
+    if (arrow != std::string::npos) path = path.substr(arrow + 4);
+    bool untracked = code == "??";
+    bool staged = !untracked && code[0] != ' ';
+    std::string status = untracked ? "untracked"
+                        : (code[0] == 'D' || code[1] == 'D') ? "deleted"
+                        : (code[0] == 'A') ? "added"
+                        : (code[0] == 'R') ? "renamed"
+                                           : "modified";
+    files.push_back({{"path", path},
+                     {"abs", joinPathSafe(dir, path)},
+                     {"status", status},
+                     {"staged", staged},
+                     {"untracked", untracked}});
+  }
+  out["files"] = files;
+  return out;
+}
+
+json listDirEntries(const std::string& dir) {
+  json out = json::array();
+  std::error_code ec;
+  std::filesystem::path root(utf8ToWide(dir));
+  if (!std::filesystem::is_directory(root, ec)) return out;
+  for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+    std::error_code fec;
+    std::string name = wideToUtf8(entry.path().filename().wstring());
+    if (name.empty()) continue;
+    if (name == ".git" || name == "node_modules" || name == ".cache") continue;
+    bool isDir = entry.is_directory(fec);
+    json item = {{"name", name}, {"path", wideToUtf8(entry.path().wstring())}, {"isDir", isDir}};
+    if (!isDir) {
+      std::error_code sec;
+      auto size = entry.file_size(sec);
+      if (!sec) item["size"] = static_cast<int64_t>(size);
+    }
+    out.push_back(item);
+    if (out.size() >= 800) break;
+  }
+  std::sort(out.begin(), out.end(), [](const json& a, const json& b) {
+    bool ad = a.value("isDir", false);
+    bool bd = b.value("isDir", false);
+    if (ad != bd) return ad;
+    std::string an = jstr(a, "name"), bn = jstr(b, "name");
+    for (auto& c : an) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (auto& c : bn) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return an < bn;
+  });
+  return out;
+}
+
 // ---------- 事件压缩 ----------
 // 流式 text/thought 是逐 token 下发的，原样落盘会让一个会话攒到十几万条、
 // 整份 sessions.json 几十 MB：启动要解析几秒，打开会话直接把前端卡死。
@@ -2409,6 +2597,43 @@ void Backend::handleWorkspaceRemove(const httplib::Request& req, httplib::Respon
   res.set_content(dumpJson(json{{"ok", true}}), "application/json; charset=utf-8");
 }
 
+void Backend::handleTree(const httplib::Request& req, httplib::Response& res) {
+  std::string path = req.has_param("path") ? req.get_param_value("path") : "";
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(json{{"entries", workspaceTree(path)}}), "application/json; charset=utf-8");
+}
+
+void Backend::handleGit(const httplib::Request&, httplib::Response& res) {
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(gitOverview()), "application/json; charset=utf-8");
+}
+
+void Backend::handleGitDiff(const httplib::Request& req, httplib::Response& res) {
+  std::string path = req.get_param_value("path");
+  bool staged = req.get_param_value("staged") == "1";
+  if (path.empty()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "缺少 path"}}), "application/json");
+    return;
+  }
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(gitDiff(path, staged)), "application/json; charset=utf-8");
+}
+
+void Backend::handleGitAction(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string action = jstr(body, "action");
+  std::string folder = jstr(body, "folder");
+  std::string message = jstr(body, "message");
+  std::vector<std::string> paths;
+  for (const auto& p : jval(body, "paths", json::array())) {
+    if (p.is_string()) paths.push_back(p.get<std::string>());
+  }
+  json out = gitAction(action, folder, paths, message);
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
 json Backend::renameWorkspaceByFolder(const std::string& path, const std::string& name) {
   if (path.empty() || name.empty()) return json::object();
   std::string key = pathKey(path);
@@ -2432,6 +2657,159 @@ json Backend::renameWorkspaceByFolder(const std::string& path, const std::string
     activeWorkspace_ = updated;
   }
   return updated;
+}
+
+bool Backend::pathInWorkspace(const std::string& path) const {
+  auto folders = foldersOf(activeWorkspaceInfo());
+  for (const auto& folder : folders) {
+    if (isPathInside(folder, path)) return true;
+  }
+  return false;
+}
+
+json Backend::workspaceTree(const std::string& path) {
+  if (path.empty()) {
+    // 根节点就是工作空间的文件夹
+    json out = json::array();
+    for (const auto& folder : foldersOf(activeWorkspaceInfo())) {
+      out.push_back({{"name", leafName(folder)}, {"path", folder}, {"isDir", true}, {"root", true}});
+    }
+    return out;
+  }
+  if (!pathInWorkspace(path)) return json::array();
+  return listDirEntries(path);
+}
+
+json Backend::gitOverview() {
+  const int64_t now = nowMs();
+  {
+    std::lock_guard<std::mutex> lk(gitMu_);
+    if (!gitCache_.empty() && now - gitCacheAt_ < 3000) return gitCache_;
+  }
+
+  json folders = json::array();
+  int changed = 0, staged = 0, untracked = 0;
+  for (const auto& folder : foldersOf(activeWorkspaceInfo())) {
+    json s = gitStatusFor(folder);
+    if (s.value("isRepo", false)) {
+      for (const auto& file : jval(s, "files", json::array())) {
+        ++changed;
+        if (file.value("staged", false)) ++staged;
+        if (file.value("untracked", false)) ++untracked;
+      }
+    }
+    folders.push_back(s);
+  }
+  json out = {{"folders", folders}, {"changed", changed}, {"staged", staged}, {"untracked", untracked}};
+  {
+    std::lock_guard<std::mutex> lk(gitMu_);
+    gitCache_ = out;
+    gitCacheAt_ = now;
+  }
+  return out;
+}
+
+json Backend::gitDiff(const std::string& absPath, bool staged) {
+  std::string folder;
+  for (const auto& f : foldersOf(activeWorkspaceInfo())) {
+    if (isPathInside(f, absPath)) {
+      folder = f;
+      break;
+    }
+  }
+  if (folder.empty()) return json{{"error", "文件不在工作空间里"}};
+
+  std::string rel = absPath;
+  if (rel.size() > folder.size()) rel = rel.substr(folder.size());
+  while (!rel.empty() && (rel[0] == '\\' || rel[0] == '/')) rel.erase(0, 1);
+
+  json out = {{"path", absPath}, {"folder", folder}, {"staged", staged}, {"diff", ""}};
+  if (!isGitRepo(folder)) {
+    out["error"] = "这个文件夹不是 git 仓库";
+    return out;
+  }
+
+  std::vector<std::string> args = {"git", "-C", folder, "diff", "--no-color"};
+  if (staged) args.push_back("--cached");
+  args.push_back("--");
+  args.push_back(rel);
+  auto r = runCapture(args, folder, 15000);
+  if (r.ok && !r.out.empty()) {
+    out["diff"] = r.out.size() > 800 * 1024 ? r.out.substr(0, 800 * 1024) : r.out;
+    return out;
+  }
+
+  // 未跟踪文件 git diff 是空的，这里造一份「全新增」的 diff
+  std::error_code ec;
+  std::filesystem::path p(utf8ToWide(absPath));
+  if (std::filesystem::is_regular_file(p, ec)) {
+    auto size = std::filesystem::file_size(p, ec);
+    if (!ec && size < 512 * 1024) {
+      std::ifstream in(p.wstring().c_str(), std::ios::binary);
+      std::stringstream ss;
+      ss << in.rdbuf();
+      std::string body = ss.str();
+      std::string diff = "diff --git a/" + rel + " b/" + rel + "\nnew file\n--- /dev/null\n+++ b/" + rel + "\n";
+      std::istringstream lines(body);
+      std::string line;
+      int count = 0;
+      while (std::getline(lines, line) && count < 4000) {
+        diff += "+" + line + "\n";
+        ++count;
+      }
+      out["diff"] = diff;
+      out["untracked"] = true;
+    } else {
+      out["binary"] = true;
+    }
+  }
+  return out;
+}
+
+json Backend::gitAction(const std::string& action, const std::string& folder,
+                        const std::vector<std::string>& paths, const std::string& message) {
+  if (folder.empty() || !pathInWorkspace(folder)) return json{{"ok", false}, {"error", "文件夹不在工作空间里"}};
+  if (!isGitRepo(folder)) return json{{"ok", false}, {"error", "不是 git 仓库"}};
+
+  auto relOf = [&](const std::string& abs) {
+    std::string rel = abs;
+    if (rel.size() > folder.size()) rel = rel.substr(folder.size());
+    while (!rel.empty() && (rel[0] == '\\' || rel[0] == '/')) rel.erase(0, 1);
+    return rel;
+  };
+
+  CmdResult r;
+  if (action == "stage" || action == "unstage") {
+    std::vector<std::string> args = {"git", "-C", folder};
+    if (action == "stage") {
+      args.push_back("add");
+      args.push_back("-A");
+    } else {
+      args.push_back("restore");
+      args.push_back("--staged");
+    }
+    args.push_back("--");
+    if (paths.empty()) {
+      args.push_back(".");
+    } else {
+      for (const auto& p : paths) args.push_back(relOf(p));
+    }
+    r = runCapture(args, folder, 20000);
+  } else if (action == "commit") {
+    std::string msg = trimStr(message);
+    if (msg.empty()) return json{{"ok", false}, {"error", "提交信息不能为空"}};
+    r = runCapture({"git", "-C", folder, "commit", "-m", msg}, folder, 30000);
+  } else {
+    return json{{"ok", false}, {"error", "未知操作"}};
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(gitMu_);
+    gitCacheAt_ = 0;
+  }
+  std::string output = trimStr(r.out);
+  if (output.size() > 4000) output = output.substr(output.size() - 4000);
+  return json{{"ok", r.ok}, {"output", output}, {"error", r.ok ? "" : output}};
 }
 
 void Backend::handleFile(const httplib::Request& req, httplib::Response& res) {
@@ -2705,6 +3083,10 @@ void Backend::handleStatic(const httplib::Request& req, httplib::Response& res) 
 }
 
 void Backend::setupRoutes() {
+  srv_.Get("/api/ping", [](const httplib::Request& req, httplib::Response& res) {
+    logf("[ping] " + req.get_param_value("from"));
+    res.set_content("{\"ok\":true}", "application/json");
+  });
   srv_.Get("/api/bootstrap", [this](const auto& r, auto& s) { handleBootstrap(r, s); });
   srv_.Post("/api/sessions", [this](const auto& r, auto& s) { handleSessions(r, s); });
   srv_.Get("/api/sessions", [this](const auto& r, auto& s) { handleBootstrap(r, s); });
@@ -2733,6 +3115,10 @@ void Backend::setupRoutes() {
   srv_.Post("/api/workspaces/create", [this](const auto& r, auto& s) { handleWorkspaceCreate(r, s); });
   srv_.Post("/api/workspaces/save", [this](const auto& r, auto& s) { handleWorkspaceSave(r, s); });
   srv_.Post("/api/workspaces/remove", [this](const auto& r, auto& s) { handleWorkspaceRemove(r, s); });
+  srv_.Get("/api/tree", [this](const auto& r, auto& s) { handleTree(r, s); });
+  srv_.Get("/api/git", [this](const auto& r, auto& s) { handleGit(r, s); });
+  srv_.Get("/api/git/diff", [this](const auto& r, auto& s) { handleGitDiff(r, s); });
+  srv_.Post("/api/git/action", [this](const auto& r, auto& s) { handleGitAction(r, s); });
   srv_.Post("/api/projects/rename", [this](const auto& r, auto& s) { handleProjectRename(r, s); });
   srv_.Post("/api/projects/apply", [this](const auto& r, auto& s) { handleProjectApply(r, s); });
   srv_.Post("/api/projects/ai-organize", [this](const auto& r, auto& s) { handleAiOrganize(r, s); });

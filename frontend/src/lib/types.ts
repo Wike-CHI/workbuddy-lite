@@ -168,6 +168,47 @@ export interface SessionDetail extends SessionSummary {
   }
 }
 
+export interface TreeEntry {
+  name: string
+  path: string
+  isDir: boolean
+  root?: boolean
+  size?: number
+}
+
+export interface GitFile {
+  path: string
+  abs: string
+  status: string
+  staged: boolean
+  untracked: boolean
+}
+
+export interface GitFolder {
+  path: string
+  label: string
+  isRepo: boolean
+  branch: string
+  files: GitFile[]
+}
+
+export interface GitOverview {
+  folders: GitFolder[]
+  changed: number
+  staged: number
+  untracked: number
+}
+
+export interface GitDiffResult {
+  path: string
+  folder: string
+  staged: boolean
+  diff: string
+  untracked?: boolean
+  binary?: boolean
+  error?: string
+}
+
 export interface AcpEvent {
   seq: number
   type: string

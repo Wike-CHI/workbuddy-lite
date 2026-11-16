@@ -40,6 +40,7 @@ struct AppState {
   ICoreWebView2* webview = nullptr;
   std::string baseUrl;
   std::string shotPath;
+  std::string winShotPath;
   std::string autoText;
   std::string clickId;
   int clickDelayMs = 0;
@@ -51,6 +52,19 @@ struct AppState {
   bool iconsFromResource = false;
   bool trayAdded = false;
   std::wstring trayTip = L"WorkBuddy Lite";
+
+  // 右栏内嵌浏览器：独立子窗口 + 第二个 WebView2 控制器
+  ICoreWebView2Environment* env = nullptr;
+  HWND browserHost = nullptr;
+  ICoreWebView2Controller* browserController = nullptr;
+  ICoreWebView2* browserView = nullptr;
+  bool browserVisible = false;
+  int browserX = 0;
+  int browserY = 0;
+  int browserW = 0;
+  int browserH = 0;
+  double browserDpr = 1.0;
+  std::wstring browserUrl;
 };
 
 AppState g_app;
@@ -101,12 +115,215 @@ bool hasFlag(const std::string& name) {
   return found;
 }
 
+int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+  UINT num = 0;
+  UINT size = 0;
+  Gdiplus::GetImageEncodersSize(&num, &size);
+  if (size == 0) return -1;
+  std::vector<BYTE> buffer(size);
+  auto* codecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
+  Gdiplus::GetImageEncoders(num, size, codecs);
+  for (UINT i = 0; i < num; ++i) {
+    if (wcscmp(codecs[i].MimeType, format) == 0) {
+      *pClsid = codecs[i].Clsid;
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+// 整窗截图：WebView2 的 CapturePreview 拍不到子窗口（右栏内嵌浏览器）
+bool captureWindowToFile(HWND hwnd, const std::string& path) {
+  RECT rc{};
+  if (!GetWindowRect(hwnd, &rc)) return false;
+  const int w = rc.right - rc.left;
+  const int h = rc.bottom - rc.top;
+  if (w <= 0 || h <= 0) return false;
+
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+  HGDIOBJ old = SelectObject(mem, bmp);
+  // 先用 PrintWindow：窗口被别的程序挡住时也能拍到自己的内容
+  BOOL ok = PrintWindow(hwnd, mem, 2 /*PW_RENDERFULLCONTENT*/);
+  if (!ok) ok = BitBlt(mem, 0, 0, w, h, screen, rc.left, rc.top, SRCCOPY | CAPTUREBLT);
+  SelectObject(mem, old);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  if (!ok) {
+    DeleteObject(bmp);
+    return false;
+  }
+
+  bool saved = false;
+  {
+    Gdiplus::Bitmap image(bmp, nullptr);
+    CLSID clsid{};
+    if (GetEncoderClsid(L"image/png", &clsid) >= 0) {
+      saved = image.Save(wbl::utf8ToWide(path).c_str(), &clsid, nullptr) == Gdiplus::Ok;
+    }
+  }
+  DeleteObject(bmp);
+  return saved;
+}
+
 void resizeWebView(HWND hwnd) {
   if (!g_app.controller) return;
   RECT rc;
   GetClientRect(hwnd, &rc);
   g_app.controller->put_Bounds(rc);
 }
+
+// 右栏内嵌浏览器
+LRESULT CALLBACK BrowserHostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void ensureBrowserHost(HWND parent) {
+  if (g_app.browserHost) return;
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = BrowserHostProc;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hbrBackground = CreateSolidBrush(RGB(255, 255, 255));
+  wc.lpszClassName = L"WBLBrowserHost";
+  RegisterClassExW(&wc);
+  g_app.browserHost =
+      CreateWindowExW(0, L"WBLBrowserHost", L"", WS_CHILD | WS_CLIPCHILDREN, 0, 0, 10, 10, parent, nullptr,
+                      GetModuleHandleW(nullptr), nullptr);
+}
+
+void postBrowserState() {
+  if (!g_app.webview || !g_app.browserView) return;
+  LPWSTR src = nullptr;
+  g_app.browserView->get_Source(&src);
+  LPWSTR title = nullptr;
+  g_app.browserView->get_DocumentTitle(&title);
+  BOOL back = FALSE;
+  BOOL forward = FALSE;
+  g_app.browserView->get_CanGoBack(&back);
+  g_app.browserView->get_CanGoForward(&forward);
+  json state = {{"type", "browser-state"},
+                {"url", src ? wbl::wideToUtf8(src) : ""},
+                {"title", title ? wbl::wideToUtf8(title) : ""},
+                {"canGoBack", back != FALSE},
+                {"canGoForward", forward != FALSE}};
+  if (src) CoTaskMemFree(src);
+  if (title) CoTaskMemFree(title);
+  std::wstring payload = wbl::utf8ToWide(state.dump());
+  g_app.webview->PostWebMessageAsJson(payload.c_str());
+}
+
+void layoutBrowser() {
+  if (!g_app.browserHost) return;
+  const int px = static_cast<int>(g_app.browserX * g_app.browserDpr + 0.5);
+  const int py = static_cast<int>(g_app.browserY * g_app.browserDpr + 0.5);
+  const int pw = static_cast<int>(g_app.browserW * g_app.browserDpr + 0.5);
+  const int ph = static_cast<int>(g_app.browserH * g_app.browserDpr + 0.5);
+  SetWindowPos(g_app.browserHost, HWND_TOP, px, py, pw, ph,
+               SWP_NOACTIVATE | (g_app.browserVisible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+  if (g_app.browserController) {
+    RECT bounds{0, 0, static_cast<LONG>(g_app.browserW), static_cast<LONG>(g_app.browserH)};
+    g_app.browserController->put_Bounds(bounds);
+  }
+}
+
+void createBrowserController() {
+  if (!g_app.env || !g_app.browserHost || g_app.browserController) return;
+  g_app.env->CreateCoreWebView2Controller(
+      g_app.browserHost,
+      Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+          [](HRESULT hr, ICoreWebView2Controller* controller) -> HRESULT {
+            if (FAILED(hr) || !controller) {
+              wbl::logf("创建浏览器 WebView2 控制器失败 hr=" + std::to_string(hr));
+              return hr;
+            }
+            g_app.browserController = controller;
+            controller->AddRef();
+            controller->put_IsVisible(g_app.browserVisible ? TRUE : FALSE);
+            RECT bounds{0, 0, static_cast<LONG>(g_app.browserW), static_cast<LONG>(g_app.browserH)};
+            controller->put_Bounds(bounds);
+
+            ICoreWebView2* view = nullptr;
+            controller->get_CoreWebView2(&view);
+            if (!view) return S_OK;
+            g_app.browserView = view;
+            view->AddRef();
+
+            ICoreWebView2Settings* settings = nullptr;
+            view->get_Settings(&settings);
+            if (settings) {
+              settings->put_AreDefaultContextMenusEnabled(TRUE);
+              settings->put_IsStatusBarEnabled(FALSE);
+              settings->put_AreDevToolsEnabled(TRUE);
+              settings->Release();
+            }
+
+            EventRegistrationToken token{};
+            view->add_NavigationCompleted(
+                Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                    [](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                      BOOL ok = FALSE;
+                      args->get_IsSuccess(&ok);
+                      wbl::logf(ok ? "browser navigation ok" : "browser navigation failed");
+                      postBrowserState();
+                      return S_OK;
+                    })
+                    .Get(),
+                &token);
+            view->add_DocumentTitleChanged(
+                Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
+                    [](ICoreWebView2*, IUnknown*) -> HRESULT {
+                      postBrowserState();
+                      return S_OK;
+                    })
+                    .Get(),
+                &token);
+            view->add_NewWindowRequested(
+                Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                    [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                      LPWSTR uri = nullptr;
+                      args->get_Uri(&uri);
+                      args->put_Handled(TRUE);
+                      if (uri && g_app.browserView) g_app.browserView->Navigate(uri);
+                      if (uri) CoTaskMemFree(uri);
+                      return S_OK;
+                    })
+                    .Get(),
+                &token);
+
+            if (!g_app.browserUrl.empty()) view->Navigate(g_app.browserUrl.c_str());
+            wbl::logf("browser webview ready");
+            return S_OK;
+          })
+          .Get());
+}
+
+void showBrowser(HWND parent, const std::wstring& url) {
+  ensureBrowserHost(parent);
+  if (!g_app.browserHost) return;
+  if (!url.empty()) g_app.browserUrl = url;
+  g_app.browserVisible = true;
+  wbl::logf("browser show " + std::to_string(g_app.browserX) + "," + std::to_string(g_app.browserY) + " " +
+            std::to_string(g_app.browserW) + "x" + std::to_string(g_app.browserH) + " dpr=" +
+            std::to_string(g_app.browserDpr));
+  ShowWindow(g_app.browserHost, SW_SHOW);
+  layoutBrowser();
+  if (!g_app.browserController) {
+    createBrowserController();
+  } else {
+    g_app.browserController->put_IsVisible(TRUE);
+    if (g_app.browserView && !url.empty()) g_app.browserView->Navigate(url.c_str());
+  }
+}
+
+void hideBrowser() {
+  g_app.browserVisible = false;
+  if (g_app.browserHost) ShowWindow(g_app.browserHost, SW_HIDE);
+  if (g_app.browserController) g_app.browserController->put_IsVisible(FALSE);
+}
+
 
 HICON createAppIcon(int size) {
   using namespace Gdiplus;
@@ -292,7 +509,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_APP_CAPTURE:
-      if (g_app.webview && !g_app.shotPath.empty()) capturePreview(g_app.webview, g_app.shotPath, hwnd);
+      if (!g_app.winShotPath.empty()) {
+        bool ok = captureWindowToFile(hwnd, g_app.winShotPath);
+        wbl::logf(ok ? "winshot ok -> " + g_app.winShotPath : "winshot failed");
+      } else if (g_app.webview && !g_app.shotPath.empty()) {
+        capturePreview(g_app.webview, g_app.shotPath, hwnd);
+      }
       return 0;
     case WM_APP_AUTO:
       // 走真实 UI 路径：先开新会话（避免续接上次会话污染验证），再填输入框 + 点发送
@@ -319,6 +541,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_DESTROY:
+      if (g_app.browserController) {
+        g_app.browserController->Close();
+        g_app.browserController->Release();
+        g_app.browserController = nullptr;
+      }
+      if (g_app.browserView) {
+        g_app.browserView->Release();
+        g_app.browserView = nullptr;
+      }
+      if (g_app.env) {
+        g_app.env->Release();
+        g_app.env = nullptr;
+      }
       removeTrayIcon(hwnd);
       PostQuitMessage(0);
       return 0;
@@ -513,6 +748,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
                       L"WorkBuddy Lite", MB_ICONERROR);
           return hr;
         }
+        g_app.env = env;
+        env->AddRef();
         env->CreateCoreWebView2Controller(
             hwnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                       [hwnd, url](HRESULT hr2, ICoreWebView2Controller* controller) -> HRESULT {
@@ -541,18 +778,65 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
                             settings->Release();
                           }
 
+                          // 右栏浏览器：页面把自己的占位区域发过来，宿主把第二个 WebView2 摆上去
+                          EventRegistrationToken msgToken{};
+                          webview->add_WebMessageReceived(
+                              Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                                  [hwnd](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                                    LPWSTR raw = nullptr;
+                                    if (FAILED(args->get_WebMessageAsJson(&raw)) || !raw) return S_OK;
+                                    json msg = json::parse(wbl::wideToUtf8(raw), nullptr, false);
+                                    CoTaskMemFree(raw);
+                                    if (msg.is_discarded() || !msg.is_object()) return S_OK;
+                                    if (wbl::jstr(msg, "type") != "browser") return S_OK;
+
+                                    std::string action = wbl::jstr(msg, "action");
+                                    json bounds = msg.value("bounds", json::object());
+                                    if (bounds.is_object()) {
+                                      g_app.browserX = bounds.value("x", 0);
+                                      g_app.browserY = bounds.value("y", 0);
+                                      g_app.browserW = bounds.value("w", 0);
+                                      g_app.browserH = bounds.value("h", 0);
+                                    }
+                                    double dpr = msg.value("dpr", 1.0);
+                                    if (dpr > 0.2) g_app.browserDpr = dpr;
+                                    std::string url = wbl::jstr(msg, "url");
+
+                                    if (action == "show") {
+                                      showBrowser(hwnd, wbl::utf8ToWide(url));
+                                    } else if (action == "bounds") {
+                                      layoutBrowser();
+                                    } else if (action == "hide") {
+                                      hideBrowser();
+                                    } else if (action == "navigate" && g_app.browserView && !url.empty()) {
+                                      g_app.browserUrl = wbl::utf8ToWide(url);
+                                      g_app.browserView->Navigate(g_app.browserUrl.c_str());
+                                    } else if (action == "reload" && g_app.browserView) {
+                                      g_app.browserView->Reload();
+                                    } else if (action == "back" && g_app.browserView) {
+                                      g_app.browserView->GoBack();
+                                    } else if (action == "forward" && g_app.browserView) {
+                                      g_app.browserView->GoForward();
+                                    }
+                                    return S_OK;
+                                  })
+                                  .Get(),
+                              &msgToken);
+
                           // 调试辅助：--auto 自动发一条消息，--shot 截图后退出，--wait 控制等待毫秒
                           std::string shotPath = getArgValue("--shot", "");
+                          std::string winShot = getArgValue("--winshot", "");
                           std::string autoText = getArgValue("--auto", "");
                           int waitMs = 5000;
                           {
                             std::string w = getArgValue("--wait", "");
                             if (!w.empty()) waitMs = atoi(w.c_str());
                           }
-                          if (!shotPath.empty() || !autoText.empty()) {
+                          if (!shotPath.empty() || !winShot.empty() || !autoText.empty()) {
                             g_app.webview = webview;
                             g_app.webview->AddRef();
                             g_app.shotPath = shotPath;
+                            g_app.winShotPath = winShot;
                             g_app.autoText = autoText;
                             g_app.evalScript = getArgValue("--eval", "");
                             g_app.clickId = getArgValue("--click", "");

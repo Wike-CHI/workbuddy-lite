@@ -8,6 +8,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "acp_client.h"
 #include "agent_host.h"
@@ -80,6 +81,14 @@ class Backend {
   json activeWorkspaceInfo() const;
   json renameWorkspaceByFolder(const std::string& path, const std::string& name);
 
+  // 右栏：文件树 / git / diff
+  bool pathInWorkspace(const std::string& path) const;
+  json workspaceTree(const std::string& path);
+  json gitOverview();
+  json gitDiff(const std::string& absPath, bool staged);
+  json gitAction(const std::string& action, const std::string& folder,
+                 const std::vector<std::string>& paths, const std::string& message);
+
   // 图片落盘：事件里只存 URL，避免 base64 把 sessions.json 撑爆
   json saveImages(const json& incoming);
 
@@ -108,6 +117,10 @@ class Backend {
   void handleWorkspaceCreate(const httplib::Request&, httplib::Response&);
   void handleWorkspaceSave(const httplib::Request&, httplib::Response&);
   void handleWorkspaceRemove(const httplib::Request&, httplib::Response&);
+  void handleTree(const httplib::Request&, httplib::Response&);
+  void handleGit(const httplib::Request&, httplib::Response&);
+  void handleGitDiff(const httplib::Request&, httplib::Response&);
+  void handleGitAction(const httplib::Request&, httplib::Response&);
   void handleProjectRename(const httplib::Request&, httplib::Response&);
   void handleProjectApply(const httplib::Request&, httplib::Response&);
   void handleAiOrganize(const httplib::Request&, httplib::Response&);
@@ -171,6 +184,11 @@ class Backend {
   // 当前工作空间：{id, name, folders[]}
   mutable std::mutex wsMu_;
   json activeWorkspace_ = json::object();
+
+  // git status 缓存（右栏会反复拉）
+  std::mutex gitMu_;
+  json gitCache_ = json::object();
+  int64_t gitCacheAt_ = 0;
 };
 
 }  // namespace wbl

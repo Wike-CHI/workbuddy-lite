@@ -8,6 +8,9 @@ import type {
   UsageSummary,
   Workspace,
   WorkspaceRecord,
+  TreeEntry,
+  GitOverview,
+  GitDiffResult,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -80,6 +83,17 @@ export const api = {
     post<{ ok: boolean; workspace?: WorkspaceRecord; error?: string }>('/api/workspaces/save', payload),
   removeWorkspace: (id: string) =>
     post<{ ok: boolean; error?: string }>('/api/workspaces/remove', { id }),
+  tree: (path?: string) =>
+    request<{ entries: TreeEntry[] }>('/api/tree' + (path ? `?path=${encodeURIComponent(path)}` : '')),
+  git: () => request<GitOverview>('/api/git'),
+  gitDiff: (path: string, staged = false) =>
+    request<GitDiffResult>(`/api/git/diff?path=${encodeURIComponent(path)}${staged ? '&staged=1' : ''}`),
+  gitAction: (payload: {
+    action: 'stage' | 'unstage' | 'commit'
+    folder: string
+    paths?: string[]
+    message?: string
+  }) => post<{ ok: boolean; output?: string; error?: string }>('/api/git/action', payload),
   openWorkspace: (path: string) =>
     post<{ ok: boolean; path: string; error?: string }>('/api/workspaces/open', { path }),
   pickWorkspace: () => post<{ path: string }>('/api/workspaces/pick', {}),

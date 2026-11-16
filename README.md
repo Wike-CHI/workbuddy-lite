@@ -22,6 +22,8 @@
   当前窗口切换、独立新窗口打开。
 - **多文件夹工作空间**：自建工作空间是「名字 + 最多 5 个文件夹」，可改名、加/减文件夹、删除分组；
   cwd 取第一个文件夹，其余目录写进 prompt 交给模型按绝对路径访问，并记住上次选择。
+- **右侧工作台**（可收起 / 拖宽）：文件树、变更 diff、计划、待办、Git（暂存 / 取消 / 提交）、
+  子智能体与后台任务、内嵌浏览器；右上角还有「详情」（文件夹改动归属、模型、上下文、积分）和「分享」（本地导出 Markdown / HTML、复制）。
 - **多窗口 / 项目分组**：侧栏按 cwd 把会话分到项目组，当前项目展开；项目组可直接新建会话或
   新窗口打开。每个窗口一个进程、一个 ACP 会话；WebView2 数据目录按 PID 隔离，
   `sessions.json` 用命名互斥锁串行化并做跨进程合并，后写的窗口不会覆盖先写的会话。
@@ -231,6 +233,21 @@ ACP 的 `session/new` 结果里同时带 `models.availableModels`（含 `_meta.c
 `/api/file` 的越界检查也从「cwd 之内」放宽到「任一文件夹之内」。
 同一主文件夹不允许出现在两个工作空间里，避免列表出现两条一样的；改名会同步写回
 `projects.json`，侧栏分组标题跟着变。
+
+**右栏的浏览器是第二个 WebView2，不是 iframe。** 前端把自己占位 div 的
+`getBoundingClientRect()`（CSS px）和 `devicePixelRatio` 通过
+`window.chrome.webview.postMessage` 发给宿主；宿主建一个 `WS_CHILD` 子窗口，
+在该子窗口上 `CreateCoreWebView2Controller`，用物理像素 `SetWindowPos`、DIP 设
+`put_Bounds`，所以 WebView2 完全独立于主界面（`X-Frame-Options` 管不到），切 tab 时
+`ShowWindow(SW_HIDE)`。导航 / 前进后退 / 刷新由页面发消息，宿主把
+`browser-state`（url、title、canGoBack）回传。`--winshot` 用 `PrintWindow` 截整窗，
+因为 WebView2 的 `CapturePreview` 拍不到子窗口。
+
+**Git 面板直接调 git CLI。** 后端用 `CreateProcessW` + 管道跑
+`git -C <folder> status --porcelain=v1 --untracked-files=all` 和 `git diff`，给 2 秒缓存；
+暂存/取消走 `git add -A --` / `git restore --staged --`，提交只接受 `-m`（不弹编辑器、
+不跳过 hooks）。未跟踪文件没有 diff，后端按「全部新增」合成一份。
+非 git 目录降级为提示，不影响会话里工具自己的 diff 展示。
 
 **图标走 .ico 资源，GDI+ 只做兜底。** `src/app.rc` 把 `src/app.ico` 链接进 exe，资源管理器、
 任务栏、托盘、Alt+Tab 都读同一套 16–256 图标；窗口和托运用 `LoadImageW` 取资源，资源缺失时

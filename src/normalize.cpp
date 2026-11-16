@@ -29,8 +29,7 @@ json normalizeQuota(const json& q) {
   return out;
 }
 
-std::string textOf(const json& content) {
-  std::string text;
+std::string textOf(const json& content) {  std::string text;
   if (content.is_string()) {
     text = content.get<std::string>();
   } else if (content.is_array()) {
@@ -46,6 +45,33 @@ std::string textOf(const json& content) {
 }
 
 }  // namespace
+
+// ACP 把子智能体/团队/计划这些信息挂在 _meta 上（codebuddy.ai/xxx）。
+// 之前只取了 usage 的字段，其余全丢，导致子代理的子事件认不出父卡片。
+void appendMetaFields(json& data, const json& update) {
+  auto metaIt = update.find("_meta");
+  if (metaIt == update.end() || !metaIt->is_object()) return;
+  const json& meta = *metaIt;
+  auto putStr = [&](const char* key, const char* out) {
+    auto it = meta.find(key);
+    if (it != meta.end() && it->is_string() && !it->get<std::string>().empty())
+      data[out] = it->get<std::string>();
+  };
+  auto putBool = [&](const char* key, const char* out) {
+    auto it = meta.find(key);
+    if (it != meta.end() && it->is_boolean()) data[out] = it->get<bool>();
+  };
+  putStr("codebuddy.ai/toolName", "toolName");
+  putBool("codebuddy.ai/isSubagent", "isSubagent");
+  putStr("codebuddy.ai/subagentType", "subagentType");
+  putBool("codebuddy.ai/isBackground", "isBackground");
+  putStr("codebuddy.ai/memberName", "memberName");
+  putStr("codebuddy.ai/parentToolCallId", "parentToolCallId");
+  putStr("codebuddy.ai/planContent", "planContent");
+  putStr("codebuddy.ai/planFilePath", "planFilePath");
+  putStr("codebuddy.ai/agent", "agentName");
+  putStr("codebuddy.ai/mainAgent", "mainAgentName");
+}
 
 json normalizeContent(const json& content) {
   json out = json::array();
@@ -158,11 +184,22 @@ NormalizedEvent normalizeUpdate(const json& update, const std::string& sessionId
   } else if (kind == "available_commands_update") {
     e.type = "commands";
     e.data["commands"] = jval(update, "availableCommands", json::array());
+  } else if (kind == "interruption_request") {
+    e.type = "interruption";
+    e.data["interruptionId"] = jstr(update, "interruptionId");
+    e.data["reason"] = jstr(update, "reason");
+    e.data["options"] = jval(update, "options", json::array());
+    e.data["toolName"] = jstr(update, "toolName");
+    e.data["toolInput"] = jval(update, "toolInput", json());
+  } else if (kind == "session_end") {
+    e.type = "done";
+    e.data["stopReason"] = jstr(update, "stopReason", "end_turn");
   } else {
     e.type = "raw_update";
     e.data["kind"] = kind;
     e.data["update"] = update;
   }
+  appendMetaFields(e.data, update);
   return e;
 }
 
