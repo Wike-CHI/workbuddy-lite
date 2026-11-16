@@ -94,6 +94,11 @@ export const api = {
     paths?: string[]
     message?: string
   }) => post<{ ok: boolean; output?: string; error?: string }>('/api/git/action', payload),
+  importChromeCookies: () =>
+    post<{ ok: boolean; total?: number; imported?: number; skipped?: number; error?: string }>(
+      '/api/browser/import',
+      {},
+    ),
   openWorkspace: (path: string) =>
     post<{ ok: boolean; path: string; error?: string }>('/api/workspaces/open', { path }),
   pickWorkspace: () => post<{ path: string }>('/api/workspaces/pick', {}),

@@ -8,8 +8,12 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 // gdiplus.h 在 NOMINMAX 下会用到 min/max 宏
 #ifndef min
@@ -24,6 +28,7 @@
 
 #include "WebView2.h"
 #include "backend.h"
+#include "chrome_cookies.h"
 
 #pragma comment(lib, "WebView2LoaderStatic.lib")
 #pragma comment(lib, "gdiplus.lib")
@@ -55,6 +60,8 @@ struct AppState {
 
   // 右栏内嵌浏览器：独立子窗口 + 第二个 WebView2 控制器
   ICoreWebView2Environment* env = nullptr;
+  ICoreWebView2Environment* browserEnv = nullptr;
+  HWND hwnd = nullptr;
   HWND browserHost = nullptr;
   ICoreWebView2Controller* browserController = nullptr;
   ICoreWebView2* browserView = nullptr;
@@ -72,6 +79,7 @@ AppState g_app;
 constexpr UINT WM_APP_CAPTURE = WM_APP + 1;
 constexpr UINT WM_APP_AUTO = WM_APP + 2;
 constexpr UINT WM_APP_TRAY = WM_APP + 3;
+constexpr UINT WM_APP_RUN_TASK = WM_APP + 4;
 
 constexpr UINT ID_TRAY_TOGGLE = 1;
 constexpr UINT ID_TRAY_NEW = 2;
@@ -230,8 +238,8 @@ void layoutBrowser() {
 }
 
 void createBrowserController() {
-  if (!g_app.env || !g_app.browserHost || g_app.browserController) return;
-  g_app.env->CreateCoreWebView2Controller(
+  if (!g_app.browserEnv || !g_app.browserHost || g_app.browserController) return;
+  g_app.browserEnv->CreateCoreWebView2Controller(
       g_app.browserHost,
       Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
           [](HRESULT hr, ICoreWebView2Controller* controller) -> HRESULT {
@@ -300,8 +308,11 @@ void createBrowserController() {
           .Get());
 }
 
-void showBrowser(HWND parent, const std::wstring& url) {
-  ensureBrowserHost(parent);
+std::wstring exeDirW();
+void createBrowserController();
+void createBrowserEnv();
+
+void showBrowser(HWND parent, const std::wstring& url) {  ensureBrowserHost(parent);
   if (!g_app.browserHost) return;
   if (!url.empty()) g_app.browserUrl = url;
   g_app.browserVisible = true;
@@ -311,10 +322,17 @@ void showBrowser(HWND parent, const std::wstring& url) {
   ShowWindow(g_app.browserHost, SW_SHOW);
   layoutBrowser();
   if (!g_app.browserController) {
-    createBrowserController();
+    createBrowserEnv();
   } else {
     g_app.browserController->put_IsVisible(TRUE);
-    if (g_app.browserView && !url.empty()) g_app.browserView->Navigate(url.c_str());
+    if (g_app.browserView && !url.empty()) {
+      // 页面回传状态会再触发一次 show，地址没变就别重新导航
+      LPWSTR current = nullptr;
+      g_app.browserView->get_Source(&current);
+      const bool same = current && _wcsicmp(current, url.c_str()) == 0;
+      if (current) CoTaskMemFree(current);
+      if (!same) g_app.browserView->Navigate(url.c_str());
+    }
   }
 }
 
@@ -322,6 +340,209 @@ void hideBrowser() {
   g_app.browserVisible = false;
   if (g_app.browserHost) ShowWindow(g_app.browserHost, SW_HIDE);
   if (g_app.browserController) g_app.browserController->put_IsVisible(FALSE);
+}
+
+// ---------- 浏览器工具：HTTP 请求要回到 UI 线程才能碰 WebView2 ----------
+struct UiCall {
+  std::function<void()> run;
+  std::mutex mu;
+  std::condition_variable cv;
+  bool done = false;
+
+  void finish() {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      done = true;
+    }
+    cv.notify_all();
+  }
+  void wait(int ms) {
+    std::unique_lock<std::mutex> lk(mu);
+    cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return done; });
+  }
+};
+
+std::mutex g_uiMu;
+std::vector<std::shared_ptr<UiCall>> g_uiPending;
+
+void runOnUi(const std::shared_ptr<UiCall>& call, int timeoutMs = 8000) {
+  {
+    std::lock_guard<std::mutex> lk(g_uiMu);
+    g_uiPending.push_back(call);
+  }
+  if (!g_app.hwnd) {
+    call->finish();
+  } else {
+    PostMessageW(g_app.hwnd, WM_APP_RUN_TASK, 0, reinterpret_cast<LPARAM>(call.get()));
+  }
+  call->wait(timeoutMs);
+  std::lock_guard<std::mutex> lk(g_uiMu);
+  g_uiPending.erase(std::remove(g_uiPending.begin(), g_uiPending.end(), call), g_uiPending.end());
+}
+
+std::string evalOnUi(const std::string& script) {
+  if (!g_app.browserView) return "";
+  auto call = std::make_shared<UiCall>();
+  auto result = std::make_shared<std::string>();
+  call->run = [call, result, script] {
+    if (!g_app.browserView) {
+      call->finish();
+      return;
+    }
+    g_app.browserView->ExecuteScript(
+        wbl::utf8ToWide(script).c_str(),
+        Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+            [call, result](HRESULT hr, LPCWSTR json) -> HRESULT {
+              if (SUCCEEDED(hr) && json) *result = wbl::wideToUtf8(json);
+              call->finish();
+              return S_OK;
+            })
+            .Get());
+  };
+  runOnUi(call);
+  return *result;
+}
+
+// 返回 {"url","title","text"} 的 JSON
+std::string browserStateJson() {
+  if (!g_app.browserView) return "";
+  std::string raw = evalOnUi(
+      "JSON.stringify({url:location.href,title:document.title,"
+      "text:(document.body?document.body.innerText:'').slice(0,8000)})");
+  json outer = json::parse(raw, nullptr, false);
+  if (outer.is_string()) {
+    std::string inner = outer.get<std::string>();
+    json parsed = json::parse(inner, nullptr, false);
+    if (!parsed.is_discarded()) return parsed.dump();
+  }
+  return "";
+}
+
+std::string captureBrowserShot(const std::string& path) {
+  if (!g_app.browserView) return "浏览器还没打开";
+  auto call = std::make_shared<UiCall>();
+  auto err = std::make_shared<std::string>("截图超时");
+  call->run = [call, err, path] {
+    if (!g_app.browserView) {
+      *err = "浏览器还没打开";
+      call->finish();
+      return;
+    }
+    IStream* stream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream)) || !stream) {
+      *err = "创建内存流失败";
+      call->finish();
+      return;
+    }
+    g_app.browserView->CapturePreview(
+        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream,
+        Callback<ICoreWebView2CapturePreviewCompletedHandler>(
+            [call, err, path, stream](HRESULT hr) -> HRESULT {
+              if (SUCCEEDED(hr)) {
+                HGLOBAL handle = nullptr;
+                if (SUCCEEDED(GetHGlobalFromStream(stream, &handle)) && handle) {
+                  const SIZE_T size = GlobalSize(handle);
+                  void* data = GlobalLock(handle);
+                  if (data && size > 0) {
+                    std::ofstream out(wbl::utf8ToWide(path).c_str(), std::ios::binary | std::ios::trunc);
+                    out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+                    out.close();
+                    err->clear();
+                  } else {
+                    *err = "读不到截图数据";
+                  }
+                  GlobalUnlock(handle);
+                } else {
+                  *err = "截图流无效";
+                }
+              } else {
+                *err = "截图失败 hr=" + std::to_string(hr);
+              }
+              stream->Release();
+              call->finish();
+              return S_OK;
+            })
+            .Get());
+  };
+  runOnUi(call, 12000);
+  return *err;
+}
+
+// 把 Chrome 的登录态写进浏览器面板的 CookieManager
+std::string importChromeCookiesJson() {
+  if (!g_app.browserView) return R"({"ok":false,"error":"先打开浏览器面板再导入"})";
+  auto loaded = wbl::loadChromeCookies();
+  if (!loaded.ok) {
+    json out = {{"ok", false}, {"error", loaded.error}, {"total", loaded.total}};
+    return out.dump();
+  }
+  auto call = std::make_shared<UiCall>();
+  auto imported = std::make_shared<int>(0);
+  auto cookies = std::make_shared<std::vector<wbl::ChromeCookie>>(std::move(loaded.cookies));
+  call->run = [call, imported, cookies] {
+    ICoreWebView2CookieManager* manager = nullptr;
+    ICoreWebView2_2* view2 = nullptr;
+    if (g_app.browserView &&
+        SUCCEEDED(g_app.browserView->QueryInterface(IID_PPV_ARGS(&view2))) && view2) {
+      view2->get_CookieManager(&manager);
+      view2->Release();
+    }
+    if (!manager) {
+      call->finish();
+      return;
+    }
+    for (const auto& cookie : *cookies) {
+      ICoreWebView2Cookie* item = nullptr;
+      if (FAILED(manager->CreateCookie(wbl::utf8ToWide(cookie.name).c_str(),
+                                       wbl::utf8ToWide(cookie.value).c_str(),
+                                       wbl::utf8ToWide(cookie.domain).c_str(),
+                                       wbl::utf8ToWide(cookie.path).c_str(), &item)) ||
+          !item) {
+        continue;
+      }
+      if (cookie.expiresUnix > 0) item->put_Expires(static_cast<double>(cookie.expiresUnix));
+      item->put_IsHttpOnly(cookie.httpOnly ? TRUE : FALSE);
+      item->put_IsSecure(cookie.secure ? TRUE : FALSE);
+      if (cookie.sameSite == 0) item->put_SameSite(COREWEBVIEW2_COOKIE_SAME_SITE_KIND_NONE);
+      else if (cookie.sameSite == 1) item->put_SameSite(COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX);
+      else if (cookie.sameSite == 2) item->put_SameSite(COREWEBVIEW2_COOKIE_SAME_SITE_KIND_STRICT);
+      manager->AddOrUpdateCookie(item);
+      item->Release();
+      (*imported)++;
+    }
+    manager->Release();
+    call->finish();
+  };
+  runOnUi(call, 20000);
+
+  json out = {{"ok", true},
+              {"total", loaded.total},
+              {"imported", *imported},
+              {"skipped", loaded.skipped}};
+  return out.dump();
+}
+
+// 浏览器面板用独立的持久化 profile：登录一次之后重启还在
+void createBrowserEnv() {
+  if (g_app.browserEnv) {
+    createBrowserController();
+    return;
+  }
+  std::wstring folder = exeDirW() + L"\\data\\browser-profile";
+  CreateCoreWebView2EnvironmentWithOptions(
+      nullptr, folder.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
+            if (FAILED(hr) || !env) {
+              wbl::logf("browser env 创建失败 hr=" + std::to_string(hr));
+              return hr;
+            }
+            g_app.browserEnv = env;
+            env->AddRef();
+            createBrowserController();
+            return S_OK;
+          })
+          .Get());
 }
 
 
@@ -540,6 +761,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_app.webview->ExecuteScript(script.c_str(), nullptr);
       }
       return 0;
+    case WM_APP_RUN_TASK: {
+      auto* call = reinterpret_cast<UiCall*>(lp);
+      if (call) {
+        if (call->run) call->run();
+        else call->finish();
+      }
+      return 0;
+    }
     case WM_DESTROY:
       if (g_app.browserController) {
         g_app.browserController->Close();
@@ -553,6 +782,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (g_app.env) {
         g_app.env->Release();
         g_app.env = nullptr;
+      }
+      if (g_app.browserEnv) {
+        g_app.browserEnv->Release();
+        g_app.browserEnv = nullptr;
       }
       removeTrayIcon(hwnd);
       PostQuitMessage(0);
@@ -699,6 +932,22 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     MessageBoxW(nullptr, L"本地服务启动失败，请查看 data\\app.log", L"WorkBuddy Lite", MB_ICONERROR);
     return 1;
   }
+  backend.setBrowserHooks(
+      [](const std::string& script) { return evalOnUi(script); },
+      [](const std::string& url) {
+        // Navigate 也必须在 UI 线程
+        auto call = std::make_shared<UiCall>();
+        auto target = std::make_shared<std::wstring>(wbl::utf8ToWide(url));
+        call->run = [call, target] {
+          g_app.browserUrl = *target;
+          if (g_app.browserView) g_app.browserView->Navigate(target->c_str());
+          call->finish();
+        };
+        runOnUi(call, 6000);
+      },
+      [] { return browserStateJson(); },
+      [](const std::string& path) { return captureBrowserShot(path); },
+      [] { return importChromeCookiesJson(); });
   const std::string activeCwd = backend.currentWorkspace();
   wbl::logf("cwd=" + activeCwd);
   g_app.backend = &backend;
@@ -724,6 +973,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
   HWND hwnd = CreateWindowExW(0, kClassName, title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                               1280, 860, nullptr, nullptr, hInst, nullptr);
   if (!hwnd) return 1;
+  g_app.hwnd = hwnd;
   SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_app.iconLarge));
   SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_app.iconSmall));
   ShowWindow(hwnd, SW_SHOW);

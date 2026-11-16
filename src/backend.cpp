@@ -918,6 +918,11 @@ bool Backend::start() {
   }
   listenThread_ = std::thread([this] { srv_.listen_after_bind(); });
   logf("http server on " + url());
+  // 给外部工具（agent 的 browser CLI）一个稳定的入口
+  {
+    std::ofstream out(localAppDir() + "\\port.txt", std::ios::binary | std::ios::trunc);
+    if (out) out << port_;
+  }
 
   // 预热 Agent（演示模式跳过）
   if (!demo_) {
@@ -2634,6 +2639,89 @@ void Backend::handleGitAction(const httplib::Request& req, httplib::Response& re
   res.set_content(dumpJson(out), "application/json; charset=utf-8");
 }
 
+void Backend::setBrowserHooks(std::function<std::string(const std::string&)> eval,
+                              std::function<void(const std::string&)> navigate,
+                              std::function<std::string()> state,
+                              std::function<std::string(const std::string&)> shot,
+                              std::function<std::string()> importCookies) {
+  browserEval_ = std::move(eval);
+  browserNavigate_ = std::move(navigate);
+  browserState_ = std::move(state);
+  browserShot_ = std::move(shot);
+  browserImportCookies_ = std::move(importCookies);
+}
+
+void Backend::handleBrowserState(const httplib::Request&, httplib::Response& res) {
+  json state = json::object();
+  if (browserState_) {
+    std::string raw = browserState_();
+    json parsed = json::parse(raw, nullptr, false);
+    if (!parsed.is_discarded() && parsed.is_object()) state = parsed;
+  }
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(json{{"ok", true}, {"state", state}}), "application/json; charset=utf-8");
+}
+
+void Backend::handleBrowserNavigate(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string url = jstr(body, "url");
+  if (url.empty()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少 url"}}), "application/json");
+    return;
+  }
+  if (browserNavigate_) browserNavigate_(url);
+  res.set_content(dumpJson(json{{"ok", true}, {"url", url}}), "application/json; charset=utf-8");
+}
+
+void Backend::handleBrowserEval(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string script = jstr(body, "script");
+  if (script.empty()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少 script"}}), "application/json");
+    return;
+  }
+  if (script.size() > 200 * 1024) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "script 太长"}}), "application/json");
+    return;
+  }
+  std::string raw = browserEval_ ? browserEval_(script) : "";
+  json value = json::parse(raw, nullptr, false);
+  if (value.is_discarded()) value = nullptr;
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(json{{"ok", true}, {"result", value}}), "application/json; charset=utf-8");
+}
+
+void Backend::handleBrowserShot(const httplib::Request& req, httplib::Response& res) {
+  std::string path = req.get_param_value("path");
+  if (path.empty()) {
+    std::string dir = localAppDir() + "\\shots";
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(utf8ToWide(dir)), ec);
+    path = dir + "\\shot-" + std::to_string(nowMs()) + ".png";
+  }
+  std::string err;
+  if (browserShot_) err = browserShot_(path);
+  if (!err.empty()) {
+    res.status = 500;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", err}}), "application/json; charset=utf-8");
+    return;
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"path", path}}), "application/json; charset=utf-8");
+}
+
+void Backend::handleBrowserImport(const httplib::Request&, httplib::Response& res) {
+  std::string raw = browserImportCookies_ ? browserImportCookies_() : "";
+  json out = json::parse(raw, nullptr, false);
+  if (out.is_discarded() || !out.is_object()) {
+    out = json{{"ok", false}, {"error", "导入失败：浏览器面板还没打开"}};
+  }
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
 json Backend::renameWorkspaceByFolder(const std::string& path, const std::string& name) {
   if (path.empty() || name.empty()) return json::object();
   std::string key = pathKey(path);
@@ -3119,6 +3207,11 @@ void Backend::setupRoutes() {
   srv_.Get("/api/git", [this](const auto& r, auto& s) { handleGit(r, s); });
   srv_.Get("/api/git/diff", [this](const auto& r, auto& s) { handleGitDiff(r, s); });
   srv_.Post("/api/git/action", [this](const auto& r, auto& s) { handleGitAction(r, s); });
+  srv_.Get("/api/browser/state", [this](const auto& r, auto& s) { handleBrowserState(r, s); });
+  srv_.Post("/api/browser/navigate", [this](const auto& r, auto& s) { handleBrowserNavigate(r, s); });
+  srv_.Post("/api/browser/eval", [this](const auto& r, auto& s) { handleBrowserEval(r, s); });
+  srv_.Get("/api/browser/shot", [this](const auto& r, auto& s) { handleBrowserShot(r, s); });
+  srv_.Post("/api/browser/import", [this](const auto& r, auto& s) { handleBrowserImport(r, s); });
   srv_.Post("/api/projects/rename", [this](const auto& r, auto& s) { handleProjectRename(r, s); });
   srv_.Post("/api/projects/apply", [this](const auto& r, auto& s) { handleProjectApply(r, s); });
   srv_.Post("/api/projects/ai-organize", [this](const auto& r, auto& s) { handleAiOrganize(r, s); });

@@ -25,11 +25,11 @@ echo [*] compiling...
 cl /nologo /std:c++17 /EHsc /O2 /MD /utf-8 /W3 /wd4996 ^
   /DNOMINMAX /DWIN32_LEAN_AND_MEAN /D_CRT_SECURE_NO_WARNINGS ^
   /I third_party /I third_party\webview2\include /I src ^
-  src\common.cpp src\agent_host.cpp src\acp_client.cpp src\normalize.cpp src\catalog.cpp src\backend.cpp src\main.cpp ^
+  src\common.cpp src\agent_host.cpp src\acp_client.cpp src\normalize.cpp src\catalog.cpp src\chrome_cookies.cpp src\backend.cpp src\main.cpp ^
   bin\obj\app.res ^
   /Fo:bin\obj\ /Fe:bin\workbuddy-lite.exe ^
   /link /SUBSYSTEM:WINDOWS /LIBPATH:third_party\webview2\lib\x64 ^
-  WebView2LoaderStatic.lib user32.lib gdi32.lib gdiplus.lib ole32.lib oleaut32.lib advapi32.lib ^
+  WebView2LoaderStatic.lib crypt32.lib bcrypt.lib user32.lib gdi32.lib gdiplus.lib ole32.lib oleaut32.lib advapi32.lib ^
   shell32.lib shlwapi.lib version.lib ws2_32.lib comctl32.lib
 
 if errorlevel 1 (

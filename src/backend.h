@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,12 @@ class Backend {
   std::string statusText() const;
   std::string currentWorkspace() const { return currentCwd(); }
   std::string workspaceName() const;
+  // 浏览器由 main.cpp 注入（WebView2 只能在 UI 线程调用）
+  void setBrowserHooks(std::function<std::string(const std::string&)> eval,
+                       std::function<void(const std::string&)> navigate,
+                       std::function<std::string()> state,
+                       std::function<std::string(const std::string&)> shot,
+                       std::function<std::string()> importCookies);
 
  private:
   void setupRoutes();
@@ -121,6 +128,11 @@ class Backend {
   void handleGit(const httplib::Request&, httplib::Response&);
   void handleGitDiff(const httplib::Request&, httplib::Response&);
   void handleGitAction(const httplib::Request&, httplib::Response&);
+  void handleBrowserState(const httplib::Request&, httplib::Response&);
+  void handleBrowserNavigate(const httplib::Request&, httplib::Response&);
+  void handleBrowserEval(const httplib::Request&, httplib::Response&);
+  void handleBrowserShot(const httplib::Request&, httplib::Response&);
+  void handleBrowserImport(const httplib::Request&, httplib::Response&);
   void handleProjectRename(const httplib::Request&, httplib::Response&);
   void handleProjectApply(const httplib::Request&, httplib::Response&);
   void handleAiOrganize(const httplib::Request&, httplib::Response&);
@@ -189,6 +201,12 @@ class Backend {
   std::mutex gitMu_;
   json gitCache_ = json::object();
   int64_t gitCacheAt_ = 0;
+
+  std::function<std::string(const std::string&)> browserEval_;
+  std::function<void(const std::string&)> browserNavigate_;
+  std::function<std::string()> browserState_;
+  std::function<std::string(const std::string&)> browserShot_;
+  std::function<std::string()> browserImportCookies_;
 };
 
 }  // namespace wbl

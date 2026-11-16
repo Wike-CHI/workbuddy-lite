@@ -24,6 +24,8 @@
   cwd 取第一个文件夹，其余目录写进 prompt 交给模型按绝对路径访问，并记住上次选择。
 - **右侧工作台**（`Ctrl B` 开合，可拖宽）：文件树、变更 diff、计划、待办、Git（暂存 / 取消 / 提交）、
   子智能体与后台任务、内嵌浏览器；右上角还有「详情」（文件夹改动归属、模型、上下文、积分）和「分享」（本地导出 Markdown / HTML、复制）。
+- **浏览器工具**：`tools/browser.mjs` 让 agent 直接操作右栏浏览器（open / state / click / type / press / eval / shot），
+  面板登录态存在 `data\browser-profile`，也可以用「导入 Chrome」把本机 Chrome 的 Cookie 导进来。
 - **多窗口 / 项目分组**：侧栏按 cwd 把会话分到项目组，当前项目展开；项目组可直接新建会话或
   新窗口打开。每个窗口一个进程、一个 ACP 会话；WebView2 数据目录按 PID 隔离，
   `sessions.json` 用命名互斥锁串行化并做跨进程合并，后写的窗口不会覆盖先写的会话。
@@ -248,6 +250,16 @@ ACP 的 `session/new` 结果里同时带 `models.availableModels`（含 `_meta.c
 暂存/取消走 `git add -A --` / `git restore --staged --`，提交只接受 `-m`（不弹编辑器、
 不跳过 hooks）。未跟踪文件没有 diff，后端按「全部新增」合成一份。
 非 git 目录降级为提示，不影响会话里工具自己的 diff 展示。
+
+**浏览器面板如何被脚本控制。** WebView2 只能在 UI 线程用，所以 HTTP 处理器不直接碰它：
+`/api/browser/eval` 把脚本包成任务 `PostMessage` 到主窗口，UI 线程 `ExecuteScript` 完再唤醒等待的线程。
+`tools/browser.mjs` 读 `bin/data/port.txt`（启动时写入）找到端口，封装成
+`open / state / click / type / press / eval / shot`，agent 直接 `node tools/browser.mjs ...` 就能操作页面。
+截图走 `CapturePreview`（只拍浏览器视图，不含界面）。
+
+**Chrome 登录态**：面板用独立的持久化 profile（`data\browser-profile`），登录一次重启还在。
+「导入 Chrome」会读 `Local State` 的 DPAPI 密钥 + `Default\Network\Cookies`，解 v10（AES-256-GCM）后写进
+CookieManager。两个限制：Chrome 运行时独占 Cookies 文件，必须先完全退出；v20（app-bound 加密）解不开，会跳过并报数量。
 
 **图标走 .ico 资源，GDI+ 只做兜底。** `src/app.rc` 把 `src/app.ico` 链接进 exe，资源管理器、
 任务栏、托盘、Alt+Tab 都读同一套 16–256 图标；窗口和托运用 `LoadImageW` 取资源，资源缺失时

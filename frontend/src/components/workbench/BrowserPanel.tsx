@@ -1,8 +1,10 @@
 import { ArrowLeft, ArrowRight, ExternalLink, Loader2, RotateCw } from 'lucide-react'
 import * as React from 'react'
+import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { api } from '@/lib/api'
 import { postBrowser, useWorkbenchStore } from '@/store/workbench'
 
 function normalizeUrl(raw: string) {
@@ -24,6 +26,7 @@ export function BrowserPanel() {
   const hostRef = React.useRef<HTMLDivElement>(null)
   const [draft, setDraft] = React.useState(url)
   const [address, setAddress] = React.useState(url)
+  const [importing, setImporting] = React.useState(false)
 
   React.useEffect(() => setDraft(address), [address])
 
@@ -128,6 +131,32 @@ export function BrowserPanel() {
         <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[10.5px]" onClick={go}>
           打开
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 shrink-0 px-1.5 text-[10.5px] font-normal text-muted-foreground"
+          disabled={importing}
+          title="把本机 Chrome 的登录态导入这个面板（需要先完全退出 Chrome）"
+          onClick={async () => {
+            setImporting(true)
+            try {
+              const res = await api.importChromeCookies()
+              if (!res.ok) toast.error(res.error || '导入失败')
+              else
+                toast.success(
+                  `已导入 ${res.imported || 0} 条登录态` +
+                    (res.skipped ? `，跳过 ${res.skipped} 条（新版本加密）` : ''),
+                )
+            } catch (error) {
+              toast.error('导入失败：' + (error instanceof Error ? error.message : String(error)))
+            } finally {
+              setImporting(false)
+            }
+          }}
+        >
+          {importing ? <Loader2 className="size-3 animate-spin" /> : '导入 Chrome'}
+        </Button>
         <button
           type="button"
           className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -145,6 +174,8 @@ export function BrowserPanel() {
       <div ref={hostRef} className="relative min-h-0 flex-1 bg-white">
         <div className="absolute inset-0 grid place-items-center px-6 text-center text-[11px] leading-5 text-muted-foreground">
           输入本地开发地址（例如 localhost:5173）后，这里会加载一个独立的 WebView2。
+          <br />
+          登录态存在 `data\browser-profile`，登录一次之后重启还在。
         </div>
       </div>
     </div>
