@@ -57,8 +57,8 @@ export function WorkspaceDialog() {
   const workspaceName = useChatStore((s) => s.workspaceName)
   const workspaceFolders = useChatStore((s) => s.workspaceFolders)
   const loadWorkspaces = useChatStore((s) => s.loadWorkspaces)
-  const useWorkspace = useChatStore((s) => s.useWorkspace)
-  const useWorkspaceById = useChatStore((s) => s.useWorkspaceById)
+  const switchWorkspace = useChatStore((s) => s.useWorkspace)
+  const switchWorkspaceById = useChatStore((s) => s.useWorkspaceById)
   const openWorkspace = useChatStore((s) => s.openWorkspace)
   const pickWorkspace = useChatStore((s) => s.pickWorkspace)
   const saveWorkspace = useChatStore((s) => s.saveWorkspace)
@@ -98,7 +98,7 @@ export function WorkspaceDialog() {
   const switchTo = async () => {
     const target = path.trim()
     if (!target) return
-    const ok = await useWorkspace(target)
+    const ok = await switchWorkspace(target)
     if (ok) setOpen(false)
   }
 
@@ -386,7 +386,7 @@ export function WorkspaceDialog() {
                           size="sm"
                           className="h-7 px-2 text-[11px] font-normal"
                           onClick={async () => {
-                            const ok = await useWorkspaceById(workspace.id!)
+                            const ok = await switchWorkspaceById(workspace.id!)
                             if (ok) setOpen(false)
                           }}
                         >
@@ -469,7 +469,7 @@ export function WorkspaceDialog() {
                         size="sm"
                         className="h-7 px-2 text-[11px] font-normal"
                         onClick={async () => {
-                          const ok = await useWorkspace(workspace.path)
+                          const ok = await switchWorkspace(workspace.path)
                           if (ok) setOpen(false)
                         }}
                       >

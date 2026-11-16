@@ -1,8 +1,9 @@
 import { ThreadPrimitive } from '@assistant-ui/react'
-import { Sparkles } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
+
+import { useChatStore } from '@/store/chat'
 
 import { MessageItem } from './MessageItem'
-import { useChatStore } from '@/store/chat'
 
 const SUGGESTIONS = [
   '看看当前目录有什么，列个清单',
@@ -13,6 +14,7 @@ const SUGGESTIONS = [
 export function ChatThread() {
   const activeId = useChatStore((s) => s.activeId)
   const send = useChatStore((s) => s.send)
+  const workspaceName = useChatStore((s) => s.workspaceName)
 
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
@@ -21,36 +23,47 @@ export function ChatThread() {
         key={activeId || 'new'}
         className="min-h-0 flex-1 overflow-y-auto scroll-smooth"
       >
-        <div className="mx-auto flex w-full max-w-[820px] flex-col px-6 py-6">
+        <div className="mx-auto flex w-full max-w-[760px] flex-col px-4 py-5">
           <ThreadPrimitive.Empty>
-            <div className="pt-[10vh] text-center">
-              <div className="mx-auto mb-4 grid size-12 place-items-center rounded-2xl bg-accent text-primary">
-                <Sparkles className="size-6" />
+            <div className="pt-[12vh]">
+              <div className="mx-auto max-w-[560px]">
+                <div className="font-mono text-[11px] text-ink-4">{workspaceName || '未命名工作空间'}</div>
+                <h2 className="mt-1 text-[15px] font-medium tracking-[-0.01em] text-ink">新会话</h2>
+                <p className="mt-1 text-[12.5px] leading-5 text-ink-3">给它一个任务，或者从下面挑一个开始。</p>
+
+                <div className="mt-5 border-y border-border/70">
+                  {SUGGESTIONS.map((text) => (
+                    <button
+                      key={text}
+                      type="button"
+                      onClick={() => void send(text)}
+                      className="group flex w-full items-center gap-2 border-b border-border/70 py-2 text-left text-[12.5px] text-ink-2 transition-colors last:border-b-0 hover:text-ink"
+                    >
+                      <ChevronRight className="size-3 shrink-0 text-ink-4 transition-colors group-hover:text-primary" />
+                      <span className="min-w-0 flex-1 truncate">{text}</span>
+                      <span className="shrink-0 text-[10.5px] text-ink-4 opacity-0 transition-opacity group-hover:opacity-100">
+                        发送
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-ink-4">
+                  <span className="flex items-center gap-1">
+                    <kbd className="rounded border border-border px-1 font-mono text-[10px]">/</kbd>
+                    技能与命令
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <kbd className="rounded border border-border px-1 font-mono text-[10px]">@</kbd>
+                    连接器
+                  </span>
+                  <span>粘贴或拖入图片</span>
+                </div>
               </div>
-              <h2 className="text-lg font-semibold tracking-tight text-foreground">说点什么，让它动手</h2>
-              <p className="mx-auto mt-1.5 max-w-md text-[13px] text-muted-foreground">
-                这个壳只做三件事：把话递给 CodeBuddy、把工具调用画清楚、把权限交回你手里。
-              </p>
-              <div className="mx-auto mt-6 flex max-w-md flex-col gap-2">
-                {SUGGESTIONS.map((text) => (
-                  <button
-                    key={text}
-                    type="button"
-                    onClick={() => void send(text)}
-                    className="rounded-xl border border-border bg-card px-3.5 py-2 text-[13px] text-muted-foreground transition-colors hover:border-[#cdd3dc] hover:text-foreground"
-                  >
-                    {text}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-5 text-[12px] text-muted-foreground">
-                输入 <code className="rounded bg-muted px-1 py-0.5 text-[11.5px]">/</code> 选技能，
-                <code className="rounded bg-muted px-1 py-0.5 text-[11.5px]">@</code> 选连接器，也可以直接粘贴或拖进图片。
-              </p>
             </div>
           </ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages>{() => <MessageItem />}</ThreadPrimitive.Messages>
-          <div className="h-8" />
+          <div className="h-6" />
         </div>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>

@@ -4,34 +4,94 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* =============================================================
+   WorkBuddy Lite design tokens
+   - canvas / surface / hairline 三层表面，不再叠卡片
+   - 单一强调色（iris），语义色只用于状态
+   - 字号下限 11px；正文 13.5px；代码 12.5px
+   ============================================================= */
 :root {
-  --background: #f6f7f9;
-  --foreground: #16181d;
-  --card: #ffffff;
-  --card-foreground: #16181d;
-  --popover: #ffffff;
-  --popover-foreground: #16181d;
-  --primary: #2f6feb;
+  --canvas: #fbfbfa;
+  --sidebar: #f5f5f2;
+  --surface: #ffffff;
+  --surface-2: #f4f4f1;
+  --surface-3: #eceae5;
+  --ink: #1b1b1f;
+  --ink-2: #55555e;
+  --ink-3: #8a8a94;
+  --ink-4: #a9a9b1;
+  --hairline: #e7e6e1;
+  --hairline-strong: #d7d6d0;
+  --accent: #5b5bd6;
+  --accent-hover: #4e4ec4;
+  --accent-soft: #eeeefb;
+  --accent-ink: #3b3ba8;
+  --ok: #16794c;
+  --ok-soft: #e8f4ee;
+  --warn: #9a6700;
+  --warn-soft: #fbf3e2;
+  --err: #c0392b;
+  --err-soft: #fbeceb;
+
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
   --primary-foreground: #ffffff;
-  --secondary: #eef1f6;
-  --secondary-foreground: #2c3440;
-  --muted: #f1f3f6;
-  --muted-foreground: #8a9099;
-  --accent: #eaf1fe;
-  --accent-foreground: #1b3f8f;
-  --destructive: #d64545;
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--ink-2);
+  --muted: var(--surface-2);
+  --muted-foreground: var(--ink-3);
+  --accent-foreground: var(--accent-ink);
+  --destructive: var(--err);
   --destructive-foreground: #ffffff;
-  --border: #e5e7eb;
-  --input: #e5e7eb;
-  --ring: #9bbcf7;
-  --sidebar: #fbfbfc;
-  --sidebar-foreground: #2c3440;
-  --sidebar-border: #eef0f3;
-  --success: #1a9f60;
-  --warning: #b7791f;
-  --warning-soft: #fdf6e7;
-  --radius: 0.75rem;
-  --composer-width: 780px;
+  --border: var(--hairline);
+  --input: var(--hairline);
+  --ring: color-mix(in srgb, var(--accent) 35%, transparent);
+  --sidebar-border: var(--hairline);
+  --success: var(--ok);
+  --warning: var(--warn);
+  --warning-soft: var(--warn-soft);
+
+  --radius: 0.5rem;
+  --shadow-pop: 0 8px 24px -12px rgb(20 20 30 / 0.18), 0 2px 6px -2px rgb(20 20 30 / 0.08);
+  --composer-width: 720px;
+
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #131316;
+  --sidebar: #17171a;
+  --surface: #1c1c20;
+  --surface-2: #202024;
+  --surface-3: #2a2a2f;
+  --ink: #e9e9ec;
+  --ink-2: #b0b0ba;
+  --ink-3: #83838d;
+  --ink-4: #5f5f68;
+  --hairline: #2a2a30;
+  --hairline-strong: #3a3a42;
+  --accent: #7c7cf0;
+  --accent-hover: #8f8ff5;
+  --accent-soft: #24243a;
+  --accent-ink: #b9b9fa;
+  --ok: #4ac48a;
+  --ok-soft: #16281f;
+  --warn: #d9a441;
+  --warn-soft: #2a2214;
+  --err: #f27c72;
+  --err-soft: #2c1917;
+
+  --primary: #5b5bd6;
+  --primary-foreground: #ffffff;
+  --ring: color-mix(in srgb, var(--accent) 45%, transparent);
+  --shadow-pop: 0 12px 32px -16px rgb(0 0 0 / 0.7), 0 2px 8px -2px rgb(0 0 0 / 0.5);
+
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -47,32 +107,42 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent-soft);
+  --color-accent-foreground: var(--accent-ink);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-foreground: var(--ink-2);
   --color-sidebar-border: var(--sidebar-border);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-err: var(--err);
+  --color-err-soft: var(--err-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
 
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 
-  --font-sans: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-sans: 'Inter var', -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/40;
+    @apply border-border;
   }
 
   html,
@@ -84,7 +154,7 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
   }
 
@@ -95,20 +165,24 @@
     font: inherit;
   }
 
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #d9dde3;
+    background: color-mix(in srgb, var(--ink-3) 38%, transparent);
     border-radius: 6px;
     border: 3px solid transparent;
     background-clip: padding-box;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #c3c9d2;
+    background: color-mix(in srgb, var(--ink-3) 62%, transparent);
     background-clip: padding-box;
     border: 3px solid transparent;
   }
@@ -116,164 +190,186 @@
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
 }
 
 @layer utilities {
   .scrollbar-none {
     scrollbar-width: none;
   }
-
   .scrollbar-none::-webkit-scrollbar {
     display: none;
   }
-
   .text-balance {
     text-wrap: balance;
   }
+  .eyebrow {
+    @apply text-[11px] font-medium text-ink-3;
+  }
+  .mono-path {
+    @apply truncate font-mono text-[11px] text-ink-3;
+  }
 }
 
-/* 消息正文：Markdown / 代码 / 表格 / 引用 */
+/* ---------- 消息正文 ---------- */
 .chat-prose {
-  @apply text-[14px] leading-7 text-foreground;
+  @apply text-[13.5px] leading-[1.75] text-foreground;
 }
-
 .chat-prose > *:first-child {
   margin-top: 0;
 }
-
 .chat-prose > *:last-child {
   margin-bottom: 0;
 }
-
 .chat-prose p {
-  @apply my-2;
+  @apply my-2.5;
 }
-
 .chat-prose h1,
 .chat-prose h2,
 .chat-prose h3,
 .chat-prose h4 {
-  @apply mt-4 mb-2 font-semibold tracking-tight;
+  @apply mb-2 mt-5 font-semibold tracking-[-0.01em];
 }
-
 .chat-prose h1 {
-  @apply text-lg;
+  @apply text-[17px];
 }
-
 .chat-prose h2 {
-  @apply text-base;
+  @apply text-[15px];
 }
-
-.chat-prose h3,
+.chat-prose h3 {
+  @apply text-[14px];
+}
 .chat-prose h4 {
-  @apply text-sm;
+  @apply text-[13.5px];
 }
-
 .chat-prose ul,
 .chat-prose ol {
-  @apply my-2 pl-5;
+  @apply my-2.5 pl-5;
 }
-
 .chat-prose ul {
   list-style: disc;
 }
-
 .chat-prose ol {
   list-style: decimal;
 }
-
 .chat-prose li {
   @apply my-1;
 }
-
+.chat-prose li::marker {
+  color: var(--ink-4);
+}
 .chat-prose blockquote {
-  @apply my-3 rounded-r-lg border-l-2 border-border bg-muted/40 px-3 py-1.5 text-muted-foreground;
+  @apply my-3 border-l-2 border-border py-0.5 pl-3 text-ink-2;
 }
-
 .chat-prose a {
-  @apply text-primary underline-offset-2 hover:underline;
+  @apply text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary;
 }
-
 .chat-prose code {
-  @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[12.5px] text-[#b93a5b];
+  @apply rounded-[4px] bg-surface-2 px-1 py-0.5 font-mono text-[12px] text-ink;
 }
-
 .chat-prose pre {
-  @apply my-3 overflow-x-auto rounded-xl border border-border bg-[#fafbfc] p-3.5;
+  @apply my-3 overflow-x-auto rounded-lg border border-border bg-surface-2/60 p-3;
 }
-
 .chat-prose pre code {
-  @apply bg-transparent p-0 text-[12.5px] text-foreground;
+  @apply bg-transparent p-0 text-[12.5px] leading-[1.65] text-ink;
 }
-
 .chat-prose table {
-  @apply my-3 w-full border-collapse overflow-hidden rounded-lg text-[12.5px];
+  @apply my-3 w-full border-collapse overflow-hidden text-[12.5px];
 }
-
 .chat-prose th,
 .chat-prose td {
-  @apply border border-border px-2.5 py-1.5 text-left align-top;
+  @apply border-b border-border px-2.5 py-1.5 text-left align-top;
 }
-
 .chat-prose th {
-  @apply bg-muted/60 font-medium;
+  @apply bg-surface-2 font-medium text-ink-2;
 }
-
 .chat-prose hr {
-  @apply my-4 border-border;
+  @apply my-5 border-border;
 }
-
 .chat-prose .katex-display {
   @apply my-3 overflow-x-auto overflow-y-hidden py-1;
 }
-
 .chat-prose pre code.hljs {
   @apply bg-transparent p-0;
 }
 
-/* assistant-ui 的 markdown 容器默认没有间距，这里补齐 */
 .aui-md > *:first-child {
   margin-top: 0;
 }
-
 .aui-md > *:last-child {
   margin-bottom: 0;
 }
 
-/* Office 预览 */
+/* ---------- 代码高亮（深色） ---------- */
+.dark .hljs {
+  color: #d6d6dd;
+  background: transparent;
+}
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #6f6f7a;
+}
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-literal,
+.dark .hljs-type {
+  color: #a5a5ff;
+}
+.dark .hljs-string,
+.dark .hljs-attr,
+.dark .hljs-template-variable {
+  color: #8fd6a8;
+}
+.dark .hljs-number,
+.dark .hljs-built_in {
+  color: #e5c07b;
+}
+.dark .hljs-title,
+.dark .hljs-function .hljs-title,
+.dark .hljs-section {
+  color: #7cb8ff;
+}
+.dark .hljs-variable,
+.dark .hljs-name,
+.dark .hljs-tag {
+  color: #e0a3a3;
+}
+.dark .hljs-meta {
+  color: #b0b0ba;
+}
+
+/* ---------- Office 预览 ---------- */
 .docx-host .docx-wrapper {
   background: transparent;
   padding: 0;
 }
-
 .docx-host .docx-wrapper > section.docx {
   background: #fff;
   margin: 0 auto 16px;
-  box-shadow: 0 2px 12px rgba(16, 24, 40, 0.08);
+  box-shadow: var(--shadow-pop);
 }
-
 .docx-host table {
   border-collapse: collapse;
 }
-
 .xlsx-viewer table {
   border-collapse: collapse;
-  background: #fff;
+  background: var(--surface);
   font-size: 12px;
 }
-
 .xlsx-viewer td,
 .xlsx-viewer th {
   border: 1px solid var(--border);
   padding: 3px 7px;
   min-width: 48px;
 }
-
 .xlsx-viewer tr:first-child td {
-  background: var(--muted);
+  background: var(--surface-2);
   font-weight: 500;
 }
-
 .pptx-preview-host canvas {
   max-width: 100%;
   height: auto !important;

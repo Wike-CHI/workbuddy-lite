@@ -245,49 +245,47 @@ export function RightPanel() {
   }
 
   return (
-    <aside
-      className="relative flex shrink-0 flex-col border-l border-border bg-[#fbfbfa]"
-      style={{ width }}
-    >
+    <aside className="relative flex shrink-0 flex-col border-l border-border bg-background" style={{ width }}>
       <div
         onMouseDown={startResize}
         className="absolute -left-[2px] top-0 z-10 h-full w-[4px] cursor-col-resize hover:bg-primary/30"
       />
 
       <div className="flex items-center gap-0.5 border-b border-border px-1.5 py-1">
-        {TABS.map((item) => {
-          const Icon = item.icon
-          const badge = badgeFor(item.id)
-          const active = tab === item.id
-          return (
-            <button
-              key={item.id}
-              type="button"
-              title={item.label}
-              onClick={() => setTab(item.id)}
-              className={cn(
-                'relative grid size-7 place-items-center rounded-md transition-colors',
-                active
-                  ? 'bg-card text-foreground shadow-sm ring-1 ring-border'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-              )}
-            >
-              <Icon className="size-3.5" />
-              {badge > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 grid min-w-[13px] place-items-center rounded-full bg-primary px-1 text-[8.5px] font-medium leading-[13px] text-primary-foreground">
-                  {badge > 99 ? '99+' : badge}
-                </span>
-              )}
-            </button>
-          )
-        })}
+        <div className="scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+          {TABS.map((item) => {
+            const badge = badgeFor(item.id)
+            const active = tab === item.id
+            return (
+              <button
+                key={item.id}
+                type="button"
+                title={item.label}
+                onClick={() => setTab(item.id)}
+                className={cn(
+                  'flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] transition-colors',
+                  active
+                    ? 'bg-surface text-ink ring-1 ring-border'
+                    : 'text-ink-4 hover:bg-surface-2 hover:text-ink-2',
+                )}
+              >
+                {item.label}
+                {badge > 0 && (
+                  <span className={cn('text-[9.5px] tabular-nums', active ? 'text-ink-2' : 'text-ink-4')}>
+                    {badge > 99 ? '99+' : badge}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
 
-        <div className="ml-auto flex items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-0.5">
           <DetailsPopover />
           <SharePopover />
           <button
             type="button"
-            className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="grid size-6 place-items-center rounded text-ink-4 hover:bg-surface-2 hover:text-ink-2"
             title="收起右栏（Ctrl B）"
             onClick={() => toggle(false)}
           >

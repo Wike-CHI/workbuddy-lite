@@ -16,12 +16,12 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  modified: 'text-[#9a6700]',
-  added: 'text-[#1a7f37]',
-  deleted: 'text-[#cf222e]',
+  modified: 'text-warning',
+  added: 'text-ok',
+  deleted: 'text-destructive',
   renamed: 'text-[#8250df]',
-  untracked: 'text-[#57606a]',
-  changed: 'text-[#9a6700]',
+  untracked: 'text-ink-3',
+  changed: 'text-warning',
 }
 
 function DiffBody() {
@@ -52,7 +52,7 @@ function DiffBody() {
       {diff.error && <div className="px-3 py-4 text-[11px] text-destructive">{diff.error}</div>}
       {diff.binary && <div className="px-3 py-4 text-[11px] text-muted-foreground">二进制文件，无法显示 diff</div>}
       {!diff.error && !diff.binary && !loading && (
-        <div className="min-h-0 flex-1 overflow-auto bg-[#fcfcfb] py-2 font-mono text-[11px] leading-[1.6]">
+        <div className="min-h-0 flex-1 overflow-auto bg-background py-2 font-mono text-[11px] leading-[1.6]">
           {diff.diff.split('\n').map((line, index) => {
             const added = line.startsWith('+') && !line.startsWith('+++')
             const removed = line.startsWith('-') && !line.startsWith('---')
@@ -62,9 +62,9 @@ function DiffBody() {
                 key={index}
                 className={cn(
                   'whitespace-pre px-2',
-                  added && 'bg-[#e6ffec] text-[#1a7f37]',
-                  removed && 'bg-[#ffebe9] text-[#cf222e]',
-                  hunk && 'bg-[#ddf4ff] text-[#0969da]',
+                  added && 'bg-[#e6ffec] text-ok',
+                  removed && 'bg-[#ffebe9] text-destructive',
+                  hunk && 'bg-accent text-primary',
                 )}
               >
                 {line || ' '}

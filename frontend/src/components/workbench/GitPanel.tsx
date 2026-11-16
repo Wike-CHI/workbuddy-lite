@@ -76,7 +76,7 @@ export function GitPanel() {
 
             {folder.files.map((file) => (
               <div key={file.abs} className="group flex items-center gap-1.5 px-2.5 py-[3px] hover:bg-muted/40">
-                <span className="w-3 shrink-0 font-mono text-[11px] text-[#9a6700]">
+                <span className="w-3 shrink-0 font-mono text-[11px] text-warning">
                   {STATUS_LABEL[file.status] || 'M'}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[11.5px]" title={file.abs}>

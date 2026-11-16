@@ -107,7 +107,7 @@ function CodeView() {
       {loading && <div className="px-3 py-4 text-[11px] text-muted-foreground">读取中…</div>}
       {file.error && <div className="px-3 py-4 text-[11px] text-destructive">{file.error}</div>}
       {!file.error && !loading && (
-        <div className="min-h-0 flex-1 overflow-auto bg-[#fcfcfb] py-2 font-mono text-[11.5px] leading-[1.6]">
+        <div className="min-h-0 flex-1 overflow-auto bg-background py-2 font-mono text-[11.5px] leading-[1.6]">
           {lines.map((line, index) => (
             <div key={index} className="flex px-2 hover:bg-muted/40">
               <span className="w-9 shrink-0 select-none pr-2 text-right text-[10px] text-muted-foreground/70">

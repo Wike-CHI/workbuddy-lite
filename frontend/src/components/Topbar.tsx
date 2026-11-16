@@ -1,23 +1,13 @@
-import { ChevronDown, FolderGit2, PanelRight, Sparkles } from 'lucide-react'
+import { ChevronDown, Coins, FolderGit2, Moon, PanelRight, Sun } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { fmtCredits, fmtNum, fmtReset, modelShort } from '@/lib/format'
+import { fmtCredits, fmtNum, fmtReset } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
+import { useThemeStore } from '@/store/theme'
 import { useUiStore } from '@/store/ui'
 import { useWorkbenchStore } from '@/store/workbench'
-
-const MODES = [
-  { value: 'default', label: '每次询问' },
-  { value: 'acceptEdits', label: '自动改文件' },
-  { value: 'plan', label: '只读规划' },
-  { value: 'auto', label: '自动审查' },
-  { value: 'dontAsk', label: '不询问' },
-  { value: 'bypassPermissions', label: '跳过权限' },
-  { value: 'fullAccess', label: '完全放行' },
-]
 
 export function Topbar() {
   const demo = useChatStore((s) => s.demo)
@@ -25,11 +15,6 @@ export function Topbar() {
   const workspaceName = useChatStore((s) => s.workspaceName)
   const workspaceFolders = useChatStore((s) => s.workspaceFolders)
   const activeTitle = useChatStore((s) => s.activeTitle)
-  const model = useChatStore((s) => s.model)
-  const models = useChatStore((s) => s.models)
-  const mode = useChatStore((s) => s.mode)
-  const setModel = useChatStore((s) => s.setModel)
-  const setMode = useChatStore((s) => s.setMode)
   const credits = useChatStore((s) => s.credits)
   const quota = useChatStore((s) => s.quota)
   const contextUsed = useChatStore((s) => s.contextUsed)
@@ -38,130 +23,116 @@ export function Topbar() {
   const setWorkspaceOpen = useUiStore((s) => s.setWorkspaceOpen)
   const panelOpen = useWorkbenchStore((s) => s.open)
   const togglePanel = useWorkbenchStore((s) => s.toggle)
+  const theme = useThemeStore((s) => s.theme)
+  const toggleTheme = useThemeStore((s) => s.toggle)
 
-  const currentModel = models.find((m) => m.id === model)
-  const modelOptions = models.length
-    ? models
-    : model
-      ? [{ id: model, name: model, credits: '', multiplier: 0, maxInputTokens: 0 }]
-      : []
-  const modeOptions = MODES.some((m) => m.value === mode) ? MODES : [...MODES, { value: mode, label: mode }]
-  const circumference = 2 * Math.PI * 15
   const ratio = contextSize > 0 ? Math.min(1, contextUsed / contextSize) : 0
+  const circumference = 2 * Math.PI * 6
 
   return (
-    <header className="flex h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border/70 px-4">
-      <div className="min-w-0 flex-1">
-        <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">{activeTitle || '新会话'}</h1>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
-          <button
-            id="cwd-chip"
-            type="button"
-            onClick={() => setWorkspaceOpen(true)}
-            title={`工作空间：${workspaceName || '—'}${workspaceFolders.length > 1 ? `（${workspaceFolders.length} 个文件夹）` : ''}\n${cwd || '—'}\n点击切换、编辑或新窗口打开`}
-            className="inline-flex min-w-0 max-w-[220px] items-center gap-1 truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <FolderGit2 className="size-3 shrink-0" />
-            <span className="truncate">{workspaceName || cwd || '—'}</span>
-            {workspaceFolders.length > 1 && (
-              <span className="shrink-0 rounded bg-background/70 px-1 text-[9.5px]">{workspaceFolders.length}</span>
-            )}
-            <ChevronDown className="size-2.5 shrink-0 opacity-60" />
-          </button>
-          {demo && (
-            <span className="shrink-0 whitespace-nowrap rounded-md bg-warning-soft px-1.5 py-0.5 text-[10.5px] text-warning">
-              演示模式
-            </span>
+    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background px-3">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <h1 className="truncate text-[13px] font-medium tracking-[-0.01em] text-foreground">
+          {activeTitle || '新会话'}
+        </h1>
+        <span className="shrink-0 text-ink-4">/</span>
+        <button
+          id="cwd-chip"
+          type="button"
+          onClick={() => setWorkspaceOpen(true)}
+          title={`工作空间：${workspaceName || '—'}\n${cwd || '—'}\n点击切换或新建`}
+          className="inline-flex min-w-0 max-w-[260px] items-center gap-1 rounded px-1 py-0.5 font-mono text-[11px] text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
+        >
+          <FolderGit2 className="size-3 shrink-0" />
+          <span className="truncate">{workspaceName || cwd || '—'}</span>
+          {workspaceFolders.length > 1 && (
+            <span className="shrink-0 tabular-nums text-ink-4">{workspaceFolders.length}</span>
           )}
-        </div>
+          <ChevronDown className="size-2.5 shrink-0 opacity-60" />
+        </button>
+        {demo && (
+          <span className="shrink-0 rounded border border-warning/30 px-1.5 text-[10.5px] leading-[18px] text-warning">
+            演示
+          </span>
+        )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
-        <Select value={model} onValueChange={(value) => void setModel(value)}>
-          <SelectTrigger className="h-8 max-w-[160px]" title="模型（含积分倍率）">
-            <SelectValue placeholder={currentModel ? modelShort(currentModel) : '模型'} />
-          </SelectTrigger>
-          <SelectContent className="max-w-[300px]">
-            {modelOptions.map((item) => (
-              <SelectItem key={item.id} value={item.id}>
-                {modelShort(item)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={mode} onValueChange={setMode}>
-          <SelectTrigger className="h-8 max-w-[104px]" title="权限模式">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {modeOptions.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {!panelOpen && (
+      <div className="flex shrink-0 items-center gap-0.5">
+        {contextSize > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-              <svg viewBox="0 0 36 36" className="size-6 -rotate-90">
-                <circle cx="18" cy="18" r="15" fill="none" stroke="#eef0f3" strokeWidth="4" />
-                <circle
-                  cx="18"
-                  cy="18"
-                  r="15"
-                  fill="none"
-                  stroke="#2f6feb"
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={circumference * (1 - ratio)}
-                  className="transition-[stroke-dashoffset] duration-500"
-                />
-              </svg>
-              <span>{fmtNum(contextUsed)}</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            上下文 {fmtNum(contextUsed)} / {fmtNum(contextSize)}
-          </TooltipContent>
+              <div className="mr-1 flex items-center gap-1.5 text-[11px] tabular-nums text-ink-3">
+                <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
+                  <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.18" />
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={circumference * (1 - ratio)}
+                    className="text-primary transition-[stroke-dashoffset] duration-300"
+                  />
+                </svg>
+                <span>{fmtNum(contextUsed)}</span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              上下文 {fmtNum(contextUsed)} / {fmtNum(contextSize)}
+            </TooltipContent>
           </Tooltip>
         )}
 
-        <Button
+        {credits > 0 && (
+        <button
           id="credit-btn"
           type="button"
-          variant="outline"
-          size="sm"
-          className="h-8 gap-1 px-2 font-mono text-[11px]"
+          onClick={() => setUsageOpen(true)}
           title={
             quota?.percent !== undefined
               ? `累计 ${fmtCredits(credits)} 积分 · 预算已用 ${Number(quota.percent).toFixed(1)}% · 重置 ${fmtReset(quota.resetAt)}`
               : `累计 ${fmtCredits(credits)} 积分`
           }
-          onClick={() => setUsageOpen(true)}
+          className="flex h-7 items-center gap-1 rounded px-1.5 text-[11px] tabular-nums text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
         >
-          <Sparkles className="size-3 text-warning" />
-          <span>{fmtCredits(credits)}</span>
-          <span className="text-muted-foreground">积分</span>
-        </Button>
+          <Coins className="size-3" />
+          {fmtCredits(credits)}
+        </button>
+        )}
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="grid size-7 place-items-center rounded text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
+              title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
+            >
+              {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{theme === 'dark' ? '浅色主题' : '深色主题'}</TooltipContent>
+        </Tooltip>
 
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="icon"
-              className={cn('size-8 shrink-0', panelOpen && 'border-primary/40 bg-accent text-accent-foreground')}
+              className={cn(
+                'size-7 rounded text-ink-3 hover:bg-surface-2 hover:text-ink-2',
+                panelOpen && 'bg-surface-2 text-ink',
+              )}
               onClick={() => togglePanel()}
             >
-              <PanelRight className="size-4" />
+              <PanelRight className="size-3.5" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>工作台 · Ctrl+B（文件 / 变更 / 计划 / Git / 浏览器）</TooltipContent>
+          <TooltipContent>工作台 · Ctrl B</TooltipContent>
         </Tooltip>
       </div>
     </header>

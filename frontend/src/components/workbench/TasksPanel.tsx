@@ -164,20 +164,20 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
   }
 
   return (
-    <div className="mb-1.5 rounded-lg border border-[#cfe0ff] bg-[#f5f9ff]">
+    <div className="mb-1.5 rounded-lg border border-border bg-surface">
       <div className="flex items-center gap-1.5 px-2 py-1.5">
-        <Workflow className="size-3.5 shrink-0 text-[#1a73e8]" />
+        <Workflow className="size-3.5 shrink-0 text-primary" />
         <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium" title={run.name}>
           {run.name}
         </span>
-        {running > 0 && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-[#1a73e8]" />}
-        <span className="shrink-0 font-mono text-[10px] text-[#1a73e8]">
+        {running > 0 && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />}
+        <span className="shrink-0 font-mono text-[10px] text-primary">
           {done}/{total || '?'}
         </span>
       </div>
       <div className="px-2 pb-1">
-        <div className="h-1 overflow-hidden rounded-full bg-[#dce8fb]">
-          <div className="h-full rounded-full bg-[#1a73e8] transition-all" style={{ width: `${pct}%` }} />
+        <div className="h-1 overflow-hidden rounded-full bg-surface-3">
+          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} />
         </div>
       </div>
 
@@ -193,14 +193,15 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
                 type="button"
                 onClick={() => setOpenPhase(active ? null : name)}
                 className={cn(
-                  'rounded px-1 py-0.5 text-[9.5px] transition-colors',
-                  finished ? 'bg-[#e6f4ea] text-[#1a7f37]' : 'bg-[#fef7e0] text-[#9a6700]',
-                  active && 'ring-1 ring-[#1a73e8]',
+                  'flex items-center gap-1 rounded border border-border/70 px-1.5 py-0.5 text-[10px] transition-colors',
+                  finished ? 'text-ink-2' : 'text-ink-2',
+                  active ? 'bg-surface-2' : 'hover:bg-surface-2',
                 )}
                 title={count ? `看 ${name} 阶段的 ${count} 个代理` : name}
               >
+                <span className={cn('size-1 rounded-full', finished ? 'bg-ok' : 'bg-warning')} />
                 {name}
-                {count > 0 && <span className="ml-0.5 opacity-60">{count}</span>}
+                {count > 0 && <span className="text-ink-4">{count}</span>}
               </button>
             )
           })}
@@ -208,22 +209,22 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
       )}
 
       {openPhase ? (
-        <div className="space-y-1 border-t border-[#dce8fb] px-2 py-1.5">
+        <div className="space-y-1 border-t border-border px-2 py-1.5">
           <div className="text-[9.5px] text-muted-foreground">阶段「{openPhase}」的代理</div>
           {!phaseAgents.length && <div className="text-[10px] text-muted-foreground">这个阶段还没有代理记录</div>}
           {phaseAgents.map((agent) => (
-            <div key={agent.key} className="rounded border border-[#dce8fb] bg-white/70 px-1.5 py-1">
+            <div key={agent.key} className="rounded border border-border bg-surface-2/60 px-1.5 py-1">
               <div className="flex items-center gap-1.5 text-[10px]">
                 <span
                   className={cn(
                     'size-1.5 shrink-0 rounded-full',
                     agent.status === 'running'
-                      ? 'animate-pulse bg-[#1a73e8]'
+                      ? 'animate-pulse bg-primary'
                       : agent.status === 'failed'
                         ? 'bg-destructive'
                         : agent.status === 'cached'
-                          ? 'bg-[#9aa0a6]'
-                          : 'bg-[#1a7f37]',
+                          ? 'bg-ink-4'
+                          : 'bg-ok',
                   )}
                 />
                 <span className="min-w-0 flex-1 truncate font-medium">{agent.label}</span>
@@ -259,24 +260,33 @@ function WorkflowCard({ run }: { run: WorkflowRunView }) {
         </div>
       ) : (
         run.agents.length > 0 && (
-          <div className="space-y-0.5 border-t border-[#dce8fb] px-2 py-1">
+          <div className="space-y-0.5 border-t border-border px-2 py-1">
             {run.agents.slice(0, 6).map((agent) => (
               <div key={agent.key} className="flex items-center gap-1.5 text-[10px]">
                 <span
                   className={cn(
                     'size-1.5 shrink-0 rounded-full',
                     agent.status === 'running'
-                      ? 'animate-pulse bg-[#1a73e8]'
+                      ? 'animate-pulse bg-primary'
                       : agent.status === 'failed'
                         ? 'bg-destructive'
                         : agent.status === 'cached'
-                          ? 'bg-[#9aa0a6]'
-                          : 'bg-[#1a7f37]',
+                          ? 'bg-ink-4'
+                          : 'bg-ok',
                   )}
                 />
                 <span className="min-w-0 flex-1 truncate">{agent.label}</span>
                 {agent.phase && <span className="shrink-0 text-muted-foreground">{agent.phase}</span>}
                 {agent.tokens > 0 && <span className="shrink-0 font-mono text-muted-foreground">{agent.tokens}</span>}
+                {agent.status === 'failed' && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded px-1 text-[9.5px] text-destructive hover:underline"
+                    onClick={() => askRetry(agent)}
+                  >
+                    重跑
+                  </button>
+                )}
               </div>
             ))}
             {run.agents.length > 6 && (
@@ -382,7 +392,7 @@ function ChildList({ run }: { run: AgentRun }) {
               className={cn(
                 'size-1.5 shrink-0 rounded-full',
                 event.data?.status === 'completed'
-                  ? 'bg-[#1a7f37]'
+                  ? 'bg-ok'
                   : event.data?.status === 'failed'
                     ? 'bg-destructive'
                     : 'bg-[#0969da]',

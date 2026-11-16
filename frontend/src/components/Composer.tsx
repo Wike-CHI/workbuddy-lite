@@ -1,20 +1,24 @@
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
-import {
-  ArrowUp,
-  ImagePlus,
-  Plus,
-  Sparkles,
-  Square,
-  X,
-} from 'lucide-react'
+import { ArrowUp, Blocks, ImagePlus, PanelsTopLeft, Square, X } from 'lucide-react'
 import * as React from 'react'
 
-import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
+import { modelShort } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { WidgetComposerDialog } from '@/components/intelligent/WidgetComposerDialog'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
 import type { AcpCommand, Attachment, CatalogSkill, Connector } from '@/lib/types'
+
+const MODES: { value: string; label: string }[] = [
+  { value: 'default', label: '每次询问' },
+  { value: 'acceptEdits', label: '自动改文件' },
+  { value: 'plan', label: '只读规划' },
+  { value: 'auto', label: '自动审查' },
+  { value: 'dontAsk', label: '不询问' },
+  { value: 'bypassPermissions', label: '跳过权限' },
+  { value: 'fullAccess', label: '完全放行' },
+]
 
 const MAX_IMAGES = 4
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -128,7 +132,15 @@ export function Composer() {
   const setDraft = useChatStore((s) => s.setDraft)
   const send = useChatStore((s) => s.send)
   const cancel = useChatStore((s) => s.cancel)
+  const model = useChatStore((s) => s.model)
+  const models = useChatStore((s) => s.models)
+  const setModel = useChatStore((s) => s.setModel)
+  const mode = useChatStore((s) => s.mode)
+  const setMode = useChatStore((s) => s.setMode)
   const setMarketOpen = useUiStore((s) => s.setMarketOpen)
+
+  const currentModel = models.find((item) => item.id === model)
+  const modeLabel = MODES.find((item) => item.value === mode)?.label || mode
 
   const skills = React.useMemo(() => skillList(catalog.skills, commands), [catalog.skills, commands])
   const connectors = React.useMemo(() => connectorList(catalog.connectors), [catalog.connectors])
@@ -277,9 +289,9 @@ export function Composer() {
   const canSend = (!!value.trim() || attachments.length > 0) && !running
 
   return (
-    <div className="shrink-0 px-6 pb-3 pt-2">
+    <div className="shrink-0 px-4 pb-2.5 pt-2">
       <div
-        className="relative mx-auto w-full max-w-[820px]"
+        className="relative mx-auto w-full max-w-[var(--composer-width)]"
         onDragOver={(event) => {
           event.preventDefault()
           setDragging(true)
@@ -341,88 +353,146 @@ export function Composer() {
 
         <ComposerPrimitive.Root
           className={cn(
-            'flex items-end gap-2 rounded-2xl border border-border bg-card px-3.5 py-2.5 shadow-sm transition-all focus-within:border-ring focus-within:ring-4 focus-within:ring-ring/15',
-            dragging && 'border-primary ring-4 ring-primary/10',
+            'rounded-xl border border-border bg-card transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
+            dragging && 'border-primary/60 ring-2 ring-primary/15',
           )}
         >
-          <div className="min-w-0 flex-1">
-            {(attachments.length > 0 || connectorRefs.length > 0) && (
-              <div className="mb-1.5 flex flex-wrap gap-1.5">
-                {attachments.map((attachment, index) => (
-                  <div
-                    key={attachment.name + index}
-                    className="group relative size-12 overflow-hidden rounded-lg border border-border bg-muted"
-                    title={attachment.name}
-                  >
-                    <img src={attachment.dataUrl} alt={attachment.name} className="size-full object-cover" />
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(index)}
-                      className="absolute right-0.5 top-0.5 grid size-4 place-items-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
-                      title="移除"
+          <div className="flex items-end gap-2 px-3 pt-2.5">
+            <div className="min-w-0 flex-1">
+              {(attachments.length > 0 || connectorRefs.length > 0) && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {attachments.map((attachment, index) => (
+                    <div
+                      key={attachment.name + index}
+                      className="group relative size-11 overflow-hidden rounded-md border border-border bg-muted"
+                      title={attachment.name}
                     >
-                      <X className="size-2.5" />
-                    </button>
-                  </div>
-                ))}
-                {connectorRefs.map((name) => (
-                  <span
-                    key={name}
-                    className="inline-flex h-6 max-w-48 items-center gap-1 rounded-md border border-[#d6e3fb] bg-accent px-2 text-[11px] text-accent-foreground"
-                  >
-                    <span className="truncate">⌁ {name}</span>
-                    <button type="button" onClick={() => removeConnector(name)} title="取消引用">
-                      <X className="size-2.5" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <ComposerPrimitive.Input
-              id="input"
-              ref={inputRef}
-              submitMode="none"
-              minRows={1}
-              maxRows={8}
-              placeholder={
-                running
-                  ? '正在处理，点右侧 ■ 停止…'
-                  : '输入消息，Enter 发送 · Shift+Enter 换行 · / 技能 · @ 连接器'
-              }
-              className="max-h-[220px] w-full resize-none border-0 bg-transparent py-1 text-[14px] leading-6 text-foreground outline-none placeholder:text-[#a2a8b2]"
-              onChange={(event) => {
-                const next = event.target.value
-                setValue(next)
-                setDraft(next)
-                setHistoryIndex(-1)
-                updatePalette(next, event.target.selectionStart ?? next.length)
-              }}
-              onClick={(event) => updatePalette(value, event.currentTarget.selectionStart ?? value.length)}
-              onKeyDown={handleKeyDown}
-              onCompositionStart={() => {
-                composing.current = true
-              }}
-              onCompositionEnd={(event) => {
-                composing.current = false
-                const next = event.currentTarget.value
-                updatePalette(next, event.currentTarget.selectionStart ?? next.length)
-              }}
-              onPaste={(event) => {
-                const files: File[] = []
-                for (const item of event.clipboardData?.items || []) {
-                  if (item.kind === 'file') {
-                    const file = item.getAsFile()
-                    if (file && /^image\//.test(file.type || '')) files.push(file)
+                      <img src={attachment.dataUrl} alt={attachment.name} className="size-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(index)}
+                        className="absolute right-0.5 top-0.5 grid size-4 place-items-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                        title="移除"
+                      >
+                        <X className="size-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {connectorRefs.map((name) => (
+                    <span
+                      key={name}
+                      className="inline-flex h-6 max-w-48 items-center gap-1 rounded border border-border bg-surface-2 px-2 text-[11px] text-ink-2"
+                    >
+                      <span className="truncate">{name}</span>
+                      <button type="button" onClick={() => removeConnector(name)} title="取消引用">
+                        <X className="size-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <ComposerPrimitive.Input
+                id="input"
+                ref={inputRef}
+                submitMode="none"
+                minRows={1}
+                maxRows={10}
+                placeholder={running ? '正在处理，点右侧停下…' : '描述任务，或输入 / 选技能、@ 引用连接器'}
+                className="max-h-[240px] w-full resize-none border-0 bg-transparent px-0.5 py-1 text-[13.5px] leading-6 text-foreground outline-none placeholder:text-ink-4"
+                onChange={(event) => {
+                  const next = event.target.value
+                  setValue(next)
+                  setDraft(next)
+                  setHistoryIndex(-1)
+                  updatePalette(next, event.target.selectionStart ?? next.length)
+                }}
+                onClick={(event) => updatePalette(value, event.currentTarget.selectionStart ?? value.length)}
+                onKeyDown={handleKeyDown}
+                onCompositionStart={() => {
+                  composing.current = true
+                }}
+                onCompositionEnd={(event) => {
+                  composing.current = false
+                  const next = event.currentTarget.value
+                  updatePalette(next, event.currentTarget.selectionStart ?? next.length)
+                }}
+                onPaste={(event) => {
+                  const files: File[] = []
+                  for (const item of event.clipboardData?.items || []) {
+                    if (item.kind === 'file') {
+                      const file = item.getAsFile()
+                      if (file && /^image\//.test(file.type || '')) files.push(file)
+                    }
                   }
-                }
-                if (files.length) {
-                  event.preventDefault()
-                  void handleFiles(files)
-                }
-              }}
-            />
+                  if (files.length) {
+                    event.preventDefault()
+                    void handleFiles(files)
+                  }
+                }}
+              />
+            </div>
+            <div className="flex shrink-0 items-center pb-1">
+              {running ? (
+                <button
+                  type="button"
+                  onClick={() => void cancel()}
+                  title="停止"
+                  className="grid size-7 place-items-center rounded-md border border-border text-ink-2 transition-colors hover:bg-surface-2"
+                >
+                  <Square className="size-3 fill-current" />
+                </button>
+              ) : (
+                <button
+                  id="send"
+                  type="button"
+                  title="发送 (Enter)"
+                  disabled={!canSend}
+                  onClick={submit}
+                  className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30"
+                >
+                  <ArrowUp className="size-4" />
+                </button>
+              )}
+            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
+
+          <div className="flex items-center gap-0.5 px-2 pb-1.5 pt-1">
+            <Select value={model} onValueChange={(value) => void setModel(value)}>
+              <SelectTrigger
+                className="h-6 w-auto gap-1 rounded border-0 bg-transparent px-1.5 text-[11.5px] text-ink-2 shadow-none hover:bg-surface-2 focus:ring-0"
+                title="模型"
+              >
+                <span className="max-w-[150px] truncate font-mono">
+                  {currentModel ? modelShort(currentModel) : model || '模型'}
+                </span>
+              </SelectTrigger>
+              <SelectContent align="start" className="max-w-[320px]">
+                {models.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {modelShort(item)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={mode} onValueChange={setMode}>
+              <SelectTrigger
+                className="h-6 w-auto gap-1 rounded border-0 bg-transparent px-1.5 text-[11.5px] text-ink-2 shadow-none hover:bg-surface-2 focus:ring-0"
+                title="权限模式"
+              >
+                <span className="max-w-[110px] truncate">{modeLabel}</span>
+              </SelectTrigger>
+              <SelectContent align="start">
+                {MODES.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <span className="mx-1 h-3 w-px bg-border" />
+
             <input
               ref={fileInputRef}
               type="file"
@@ -434,50 +504,34 @@ export function Composer() {
                 event.target.value = ''
               }}
             />
-            <Button
+            <button
               type="button"
-              variant="outline"
-              size="icon"
-              className="size-8 rounded-lg text-muted-foreground"
-              title="生成交互回答（地图 / 图表 / 表单 / 文章）"
-              onClick={() => setIuiOpen(true)}
-            >
-              <Sparkles className="size-4" />
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="size-8 rounded-lg text-muted-foreground"
+              className="grid size-6 place-items-center rounded text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
               title="添加图片（也可粘贴或拖入）"
               onClick={() => fileInputRef.current?.click()}
             >
-              <ImagePlus className="size-4" />
-            </Button>
-            {running ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="size-8 rounded-lg"
-                title="停止"
-                onClick={() => void cancel()}
-              >
-                <Square className="size-3.5 fill-current" />
-              </Button>
-            ) : (
-              <Button
-                id="send"
-                type="button"
-                size="icon"
-                className="size-8 rounded-lg"
-                title="发送"
-                disabled={!canSend}
-                onClick={submit}
-              >
-                <ArrowUp className="size-4" />
-              </Button>
-            )}
+              <ImagePlus className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              className="grid size-6 place-items-center rounded text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
+              title="生成交互回答（地图 / 图表 / 表单 / 文章）"
+              onClick={() => setIuiOpen(true)}
+            >
+              <PanelsTopLeft className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              className="grid size-6 place-items-center rounded text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
+              title="技能 / 连接器"
+              onClick={() => setMarketOpen(true)}
+            >
+              <Blocks className="size-3.5" />
+            </button>
+
+            <span className="flex-1" />
+            {charCount > 0 && <span className="pr-1 font-mono text-[10.5px] text-ink-4">{charCount} 字</span>}
+            <span className="pr-1 text-[10.5px] text-ink-4">Enter 发送</span>
           </div>
         </ComposerPrimitive.Root>
 
@@ -496,23 +550,7 @@ export function Composer() {
           }}
         />
 
-        <div className="mx-auto mt-1.5 flex w-full items-center gap-1.5 px-1 text-[10.5px] text-muted-foreground">
-          <span>{running ? '工作中' : '就绪'}</span>
-          <span>·</span>
-          <span>Enter 发送 · Shift+Enter 换行</span>
-          <span className="flex-1" />
-          <span className="font-mono">{charCount} 字</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-6 px-2 text-[10.5px] font-normal"
-            onClick={() => setMarketOpen(true)}
-          >
-            <Plus className="mr-1 size-3" />
-            技能 / 连接器
-          </Button>
-        </div>
+        <div className="mx-auto mt-1.5 hidden" aria-hidden />
       </div>
     </div>
   )

@@ -13,6 +13,7 @@ import { RightPanel } from '@/components/workbench/RightPanel'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useChatStore } from '@/store/chat'
+import { initTheme } from '@/store/theme'
 import { useUiStore } from '@/store/ui'
 import { useIntelligentUiStore } from '@/store/intelligentUi'
 import { useWorkbenchStore } from '@/store/workbench'
@@ -60,6 +61,7 @@ export default function App() {
   const togglePanel = useWorkbenchStore((s) => s.toggle)
 
   useEffect(() => {
+    initTheme()
     void init()
     void useIntelligentUiStore.getState().load()
   }, [init])
@@ -113,7 +115,7 @@ export default function App() {
       <TooltipProvider delayDuration={250}>
         <div className="flex h-full min-h-0 overflow-hidden">
           <Sidebar />
-          <main className="flex min-w-0 flex-1 flex-col bg-card">
+          <main className="flex min-w-0 flex-1 flex-col bg-background">
             <Topbar />
             {agentError && (
               <div className="border-b border-[#f3d0d0] bg-[#fdf4f4] px-5 py-2 text-xs text-[#8f2d2d]">

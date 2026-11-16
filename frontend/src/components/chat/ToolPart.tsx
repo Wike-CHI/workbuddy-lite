@@ -35,11 +35,11 @@ const STATUS_TEXT: Record<string, string> = {
   cancelled: '已取消',
 }
 
-function statusClass(status: string) {
-  if (status === 'completed') return 'bg-[#eaf7f0] text-[#1a9f60]'
-  if (status === 'failed' || status === 'cancelled') return 'bg-[#fdeeee] text-destructive'
-  if (status === 'in_progress') return 'bg-warning-soft text-warning'
-  return 'bg-muted text-muted-foreground'
+function statusDot(status: string) {
+  if (status === 'completed') return 'bg-ok'
+  if (status === 'failed' || status === 'cancelled') return 'bg-destructive'
+  if (status === 'in_progress') return 'bg-warning animate-pulse'
+  return 'bg-ink-4'
 }
 
 function contentBlocks(content: unknown) {
@@ -58,14 +58,16 @@ function DiffBlock({ block }: { block: any }) {
     if (line !== '' || newLines.length > 1) rows.push({ type: 'add', text: line })
   })
   return (
-    <div className="overflow-hidden rounded-lg border border-border font-mono text-[11.5px] leading-[1.55]">
-      <div className="border-b border-border bg-muted/40 px-2.5 py-1 text-muted-foreground">{block.path || ''}</div>
+    <div className="overflow-hidden rounded-md border border-border/70 font-mono text-[11.5px] leading-[1.55]">
+      <div className="flex items-center gap-1.5 border-b border-border/70 bg-surface-2/60 px-2 py-1 text-[10.5px] text-ink-3">
+        <span className="truncate">{block.path || ''}</span>
+      </div>
       {rows.map((row, index) => (
         <div
           key={index}
           className={cn(
-            'whitespace-pre-wrap break-all px-2.5 py-0.5',
-            row.type === 'add' ? 'bg-[#f0fbf4] text-[#17663f]' : 'bg-[#fdf2f2] text-[#8f2d2d]',
+            'whitespace-pre-wrap break-all px-2 py-0.5',
+            row.type === 'add' ? 'bg-ok-soft text-[color:var(--ok)]' : 'bg-err-soft text-[color:var(--err)]',
           )}
         >
           {row.type === 'add' ? '+ ' : '- '}
@@ -107,44 +109,48 @@ export function ToolPart(props: ToolCallMessagePartProps) {
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex items-center gap-2 px-3 py-2">
+    <div className={cn('rounded-md border border-transparent transition-colors hover:border-border/70', open && 'border-border/70')}>
+      <div className="flex items-center gap-2 px-1.5 py-1.5">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
-          <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate text-[12.5px] font-medium text-foreground">{title}</span>
-          <ChevronDown className={cn('size-3 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+          <span className={cn('size-1.5 shrink-0 rounded-full', statusDot(status))} />
+          <Icon className="size-3.5 shrink-0 text-ink-3" />
+          <span className="truncate text-[12.5px] text-ink">{title}</span>
+          <ChevronDown
+            className={cn('size-3 shrink-0 text-ink-4 transition-transform', open && 'rotate-180')}
+          />
         </button>
-        <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', statusClass(status))}>
-          {STATUS_TEXT[status] || status}
-        </span>
+        <span className="shrink-0 font-mono text-[10.5px] text-ink-4">{STATUS_TEXT[status] || status}</span>
       </div>
       {open && hasBody && (
-        <div className="space-y-2 border-t border-border px-3 py-2.5">
+        <div className="space-y-2 border-t border-border/70 px-2 py-2">
           {inputText && (
             <div className="relative">
-              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/40 p-2.5 pr-9 font-mono text-[11.5px] leading-5 text-muted-foreground">
+              <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-2/70 p-2 pr-8 font-mono text-[11px] leading-5 text-ink-2">
                 {inputText}
               </pre>
               <button
                 type="button"
                 onClick={copyInput}
                 title="复制参数"
-                className="absolute right-1.5 top-1.5 rounded p-1 text-muted-foreground hover:bg-card hover:text-foreground"
+                className="absolute right-1 top-1 rounded p-1 text-ink-3 hover:bg-surface-3 hover:text-ink"
               >
                 <Copy className="size-3" />
               </button>
-              {copied && <span className="absolute right-8 top-1.5 text-[10px] text-success">已复制</span>}
+              {copied && <span className="absolute right-7 top-1 text-[10px] text-ok">已复制</span>}
             </div>
           )}
           {blocks.map((block: any, index: number) => {
             if (block.type === 'diff') return <DiffBlock key={index} block={block} />
             if (block.type === 'text')
               return (
-                <div key={index} className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-5 text-muted-foreground">
+                <div
+                  key={index}
+                  className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-ink-3"
+                >
                   {String(block.text || '')}
                 </div>
               )
@@ -155,7 +161,7 @@ export function ToolPart(props: ToolCallMessagePartProps) {
                   href={block.uri}
                   target="_blank"
                   rel="noreferrer"
-                  className="block truncate text-xs text-primary hover:underline"
+                  className="block truncate text-[11.5px] text-primary hover:underline"
                 >
                   {block.name || block.uri}
                 </a>
@@ -163,7 +169,7 @@ export function ToolPart(props: ToolCallMessagePartProps) {
             return null
           })}
           {artifact.rawOutput ? (
-            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/40 p-2.5 font-mono text-[11.5px] leading-5 text-muted-foreground">
+            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-2/70 p-2 font-mono text-[11px] leading-5 text-ink-2">
               {typeof artifact.rawOutput === 'string' ? artifact.rawOutput : JSON.stringify(artifact.rawOutput, null, 2)}
             </pre>
           ) : null}
