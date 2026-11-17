@@ -214,17 +214,16 @@ std::string AcpClient::newSession(const std::string& cwd) {
   return jstr(newSessionInfo(cwd), "sessionId");
 }
 
-std::string AcpClient::loadSession(const std::string& sessionId, const std::string& cwd) {
-  request("session/load",
-          {{"sessionId", sessionId}, {"cwd", cwd}, {"mcpServers", json::array()}}, 180);
-  return sessionId;
+json AcpClient::loadSession(const std::string& sessionId, const std::string& cwd) {
+  return request("session/load",
+                 {{"sessionId", sessionId}, {"cwd", cwd}, {"mcpServers", json::array()}}, 180);
 }
 
 json AcpClient::setConfigOption(const std::string& sessionId, const std::string& configId,
-                                const std::string& value) {
-  return request(
-      "session/set_config_option",
-      {{"sessionId", sessionId}, {"configId", configId}, {"value", value}}, 60);
+                                const json& value, const std::string& type) {
+  json params = {{"sessionId", sessionId}, {"configId", configId}, {"value", value}};
+  if (!type.empty()) params["type"] = type;
+  return request("session/set_config_option", params, 60);
 }
 
 json AcpClient::prompt(const std::string& sessionId, const std::string& text, const json& images,

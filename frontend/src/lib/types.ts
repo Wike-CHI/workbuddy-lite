@@ -30,6 +30,8 @@ export interface SessionSummary {
   cwd: string
   model?: string
   mode?: string
+  config?: Record<string, string | boolean>
+  acpSessionId?: string
   updatedAt: number
   usage?: SessionUsage
   messageCount?: number
@@ -46,6 +48,22 @@ export interface ModelInfo {
   supportsImages?: boolean
   supportsReasoning?: boolean
   effortOptions?: { value: string; name: string }[]
+}
+
+export interface ConfigOptionValue {
+  value: string
+  name: string
+  description?: string
+}
+
+export interface ConfigOption {
+  id: string
+  name?: string
+  description?: string
+  type?: 'select' | 'boolean' | string
+  category?: string
+  currentValue?: string | boolean
+  options?: ConfigOptionValue[]
 }
 
 export interface Quota {

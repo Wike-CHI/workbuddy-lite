@@ -10,6 +10,7 @@ import type {
   Bootstrap,
   Catalog,
   ChatMessage,
+  ConfigOption,
   ModelInfo,
   Quota,
   SessionSummary,
@@ -21,7 +22,14 @@ const EMPTY_CATALOG: Catalog = { skills: [], connectors: [], plugins: [], market
 const PREF_KEY = 'wbl.prefs'
 const DRAFT_KEY = 'wbl.drafts'
 
-function readPrefs(): { mode?: string; model?: string } {
+interface Prefs {
+  mode?: string
+  model?: string
+  thought?: string
+  config?: Record<string, string | boolean>
+}
+
+function readPrefs(): Prefs {
   try {
     return JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}
   } catch {
@@ -38,6 +46,10 @@ function readDrafts(): Record<string, string> {
 }
 
 const drafts = readDrafts()
+const prefs = readPrefs()
+const configTouchedFromPrefs: Record<string, true> = Object.fromEntries(
+  Object.keys(prefs.config || {}).map((key) => [key, true as const]),
+)
 
 function saveDrafts() {
   try {
@@ -47,12 +59,47 @@ function saveDrafts() {
   }
 }
 
-function savePrefs(mode: string, model: string) {
+function savePrefs(
+  mode: string,
+  model: string,
+  thought: string,
+  config: Record<string, string | boolean>,
+) {
   try {
-    localStorage.setItem(PREF_KEY, JSON.stringify({ mode, model }))
+    localStorage.setItem(PREF_KEY, JSON.stringify({ mode, model, thought, config }))
   } catch {
     // ignore
   }
+}
+
+function persistPrefs(state: {
+  mode: string
+  model: string
+  thoughtLevel: string
+  configValues: Record<string, string | boolean>
+}) {
+  savePrefs(state.mode, state.model, state.thoughtLevel, state.configValues)
+}
+
+// ACP 的 config_option_update 是全量快照。这里只认未被用户手动改过的项，
+// 避免服务端回传把用户刚选的档位又盖回去。
+function adoptConfig(
+  options: ConfigOption[],
+  touched: { thought: boolean; config: Record<string, true> },
+) {
+  let thought: string | undefined
+  const values: Record<string, string | boolean> = {}
+  for (const opt of options) {
+    if (!opt || !opt.id || opt.id === 'model' || opt.id === 'mode') continue
+    const value = opt.currentValue
+    if (opt.id === 'thought_level') {
+      if (!touched.thought && typeof value === 'string' && value) thought = value
+      continue
+    }
+    if (touched.config[opt.id]) continue
+    if (typeof value === 'string' || typeof value === 'boolean') values[opt.id] = value
+  }
+  return { thought, values }
 }
 
 let polling = false
@@ -63,23 +110,42 @@ function parseMultiplier(credits: string) {
   return hit ? parseFloat(hit[1]) : 0
 }
 
-function modelsFromConfig(options: unknown): ModelInfo[] {
+function modelsFromConfig(options: unknown, previous: ModelInfo[] = []): ModelInfo[] {
   if (!Array.isArray(options)) return []
-  return options
-    .filter(
-      (o): o is { value: string; name?: string; description?: string } =>
-        typeof o === 'object' && o !== null && typeof (o as { value?: unknown }).value === 'string',
-    )
-    .map((o) => {
-      const credits = o.description || ''
-      return {
-        id: o.value,
-        name: o.name || o.value,
-        credits,
-        multiplier: parseMultiplier(credits),
-        maxInputTokens: 0,
+  const out: ModelInfo[] = []
+  for (const raw of options) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const o = raw as {
+      value?: unknown
+      modelId?: unknown
+      name?: string
+      description?: string
+      _meta?: {
+        credits?: string
+        maxInputTokens?: number
+        supportsImages?: boolean
+        supportsReasoning?: boolean
+        effortOptions?: { value: string; name: string }[]
       }
+    }
+    const id =
+      typeof o.value === 'string' ? o.value : typeof o.modelId === 'string' ? o.modelId : ''
+    if (!id) continue
+    const meta = o._meta || {}
+    const existing = previous.find((item) => item.id === id)
+    const credits = meta.credits || o.description || existing?.credits || ''
+    out.push({
+      id,
+      name: o.name || existing?.name || id,
+      credits,
+      multiplier: parseMultiplier(credits),
+      maxInputTokens: Number(meta.maxInputTokens || existing?.maxInputTokens || 0),
+      supportsImages: meta.supportsImages ?? existing?.supportsImages,
+      supportsReasoning: meta.supportsReasoning ?? existing?.supportsReasoning,
+      effortOptions: meta.effortOptions || existing?.effortOptions || [],
     })
+  }
+  return out
 }
 
 interface ChatState {
@@ -101,6 +167,11 @@ interface ChatState {
   mode: string
   modelTouched: boolean
   modeTouched: boolean
+  thoughtLevel: string
+  thoughtTouched: boolean
+  configOptions: ConfigOption[]
+  configValues: Record<string, string | boolean>
+  configTouched: Record<string, true>
   models: ModelInfo[]
   quota: Quota | null
   credits: number
@@ -134,6 +205,8 @@ interface ChatState {
   resolvePermission: (requestId: string, optionId: string) => Promise<void>
   setModel: (model: string) => Promise<void>
   setMode: (mode: string) => void
+  setThoughtLevel: (value: string) => void
+  setConfig: (id: string, value: string | boolean) => Promise<void>
   loadModels: () => Promise<void>
   loadUsage: () => Promise<void>
   loadCatalog: () => Promise<void>
@@ -173,10 +246,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   running: false,
   lastSeq: 0,
   events: [],
-  model: readPrefs().model || '',
-  mode: readPrefs().mode || 'fullAccess',
-  modelTouched: !!readPrefs().model,
-  modeTouched: !!readPrefs().mode,
+  model: prefs.model || '',
+  mode: prefs.mode || 'fullAccess',
+  modelTouched: !!prefs.model,
+  modeTouched: !!prefs.mode,
+  thoughtLevel: prefs.thought || '',
+  thoughtTouched: !!prefs.thought,
+  configOptions: [],
+  configValues: prefs.config || {},
+  configTouched: configTouchedFromPrefs,
   models: [],
   quota: null,
   credits: 0,
@@ -272,23 +350,32 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     if (ev.sessionId && activeId && ev.sessionId !== activeId) return
 
     if (ev.type === 'config') {
-      const options = Array.isArray(ev.data.options) ? ev.data.options : []
-      const mode = options.find((o: any) => o && o.id === 'mode')
-      const model = options.find((o: any) => o && o.id === 'model')
+      const options = (Array.isArray(ev.data.options) ? ev.data.options : []) as ConfigOption[]
+      const mode = options.find((o) => o && o.id === 'mode')
+      const model = options.find((o) => o && o.id === 'model')
+      if (options.length) set({ configOptions: options })
       if (mode) {
         set({
-          mode: get().modeTouched ? get().mode : mode.currentValue || get().mode,
+          mode: get().modeTouched ? get().mode : String(mode.currentValue ?? get().mode),
         })
       }
       if (model) {
-        const list = modelsFromConfig(model.options)
+        const list = modelsFromConfig(model.options, get().models)
         set({
           models: list.length ? list : get().models,
-          model: get().modelTouched ? get().model : model.currentValue || get().model,
+          model: get().modelTouched ? get().model : String(model.currentValue ?? get().model),
         })
       }
+      const adopted = adoptConfig(options, {
+        thought: get().thoughtTouched,
+        config: get().configTouched,
+      })
+      if (adopted.thought) set({ thoughtLevel: adopted.thought })
+      if (Object.keys(adopted.values).length) {
+        set({ configValues: { ...get().configValues, ...adopted.values } })
+      }
     } else if (ev.type === 'models') {
-      const list = modelsFromConfig(ev.data.models)
+      const list = modelsFromConfig(ev.data.models, get().models)
       if (list.length) {
         set({
           models: list,
@@ -332,6 +419,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const history = (detail.events || [])
         .filter((e) => e.type === 'user' && typeof e.data?.text === 'string')
         .map((e) => String(e.data.text))
+      const storedConfig = detail.config || {}
+      const storedThought =
+        typeof storedConfig.thought_level === 'string' ? storedConfig.thought_level : ''
+      const nextConfigValues = { ...get().configValues }
+      for (const [key, value] of Object.entries(storedConfig)) {
+        if (key === 'thought_level' || get().configTouched[key]) continue
+        if (typeof value === 'string' || typeof value === 'boolean') nextConfigValues[key] = value
+      }
       set({
         activeId: id,
         activeTitle: detail.title || '新会话',
@@ -345,6 +440,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         running: false,
         model: detail.model || get().model,
         mode: detail.mode || get().mode,
+        thoughtLevel:
+          !get().thoughtTouched && storedThought ? storedThought : get().thoughtLevel,
+        configValues: nextConfigValues,
         history,
         attachments: [],
         connectorRefs: [],
@@ -439,6 +537,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         text: trimmed,
         mode: get().mode,
         model: get().model,
+        config: get().thoughtLevel
+          ? { ...get().configValues, thought_level: get().thoughtLevel }
+          : { ...get().configValues },
         images,
         connectors: get().connectorRefs.slice(),
       })
@@ -482,10 +583,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setModel: async (model) => {
     set({ model, modelTouched: true })
-    savePrefs(get().mode, model)
+    // 新模型可能不支持当前 effort 档位；先夹到合法值，再一起提交。
+    const option = get().models.find((item) => item.id === model)
+    const allowed = (option?.effortOptions || []).map((item) => item.value)
+    const thoughtOptions = get().configOptions.find((item) => item.id === 'thought_level')?.options || []
+    const fallback = thoughtOptions.some((item) => item.value === 'enabled')
+      ? 'enabled'
+      : allowed[0] || ''
+    let clamped: string | null = null
+    if (
+      get().thoughtLevel &&
+      allowed.length &&
+      !allowed.includes(get().thoughtLevel) &&
+      get().thoughtLevel !== 'enabled'
+    ) {
+      clamped = fallback
+      set({ thoughtLevel: fallback, thoughtTouched: true })
+    }
+    persistPrefs(get())
     try {
       const res = await api.setModel(model, get().activeId || '')
       if (res.error) toast.error('模型切换失败：' + res.error)
+      if (clamped) void get().setConfig('thought_level', clamped)
     } catch (error) {
       toast.error('模型切换失败：' + (error instanceof Error ? error.message : String(error)))
     }
@@ -493,7 +612,46 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setMode: (mode) => {
     set({ mode, modeTouched: true })
-    savePrefs(mode, get().model)
+    persistPrefs(get())
+  },
+
+  setThoughtLevel: (value) => {
+    void get().setConfig('thought_level', value)
+  },
+
+  setConfig: async (id, value) => {
+    const prev = id === 'thought_level' ? get().thoughtLevel : get().configValues[id]
+    const prevTouched = { ...get().configTouched }
+    if (id === 'thought_level') {
+      set({ thoughtLevel: String(value), thoughtTouched: true })
+    } else {
+      set({
+        configValues: { ...get().configValues, [id]: value },
+        configTouched: { ...get().configTouched, [id]: true },
+      })
+    }
+    persistPrefs(get())
+    try {
+      const res = await api.setConfig(
+        id,
+        value,
+        get().activeId || '',
+        typeof value === 'boolean' ? 'boolean' : 'select',
+      )
+      if (res.error) throw new Error(res.error)
+      if (res.options?.length) set({ configOptions: res.options })
+    } catch (error) {
+      if (id === 'thought_level') {
+        set({ thoughtLevel: typeof prev === 'string' ? prev : '' })
+      } else {
+        const next = { ...get().configValues }
+        if (prev === undefined) delete next[id]
+        else next[id] = prev
+        set({ configValues: next, configTouched: prevTouched })
+      }
+      persistPrefs(get())
+      toast.error('配置切换失败：' + (error instanceof Error ? error.message : String(error)))
+    }
   },
 
   loadModels: async () => {
@@ -504,6 +662,37 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           models: res.models,
           model: get().modelTouched ? get().model : res.selected || res.currentId || get().model,
         })
+      }
+      const options = res.config?.options || []
+      if (options.length) {
+        set({ configOptions: options })
+        // 已有活动会话时，配置以会话详情/事件为准；全局快照可能来自预热的空会话
+        if (!get().activeId) {
+          const adopted = adoptConfig(options, {
+            thought: get().thoughtTouched,
+            config: get().configTouched,
+          })
+          if (adopted.thought) set({ thoughtLevel: adopted.thought })
+          if (Object.keys(adopted.values).length) {
+            set({ configValues: { ...get().configValues, ...adopted.values } })
+          }
+        }
+      }
+      // 模型目录更新后，把不兼容的 effort 夹到当前模型支持的档位
+      const selected = get().models.find((item) => item.id === get().model)
+      const allowed = (selected?.effortOptions || []).map((item) => item.value)
+      if (
+        allowed.length &&
+        get().thoughtLevel &&
+        !allowed.includes(get().thoughtLevel) &&
+        get().thoughtLevel !== 'enabled'
+      ) {
+        const thoughtOptions = options.find((item) => item.id === 'thought_level')?.options || []
+        const fallback = thoughtOptions.some((item) => item.value === 'enabled')
+          ? 'enabled'
+          : allowed[0]
+        set({ thoughtLevel: fallback, thoughtTouched: true })
+        persistPrefs(get())
       }
       if (res.quota && res.quota.percent !== undefined) set({ quota: res.quota })
       if (res.error) toast.error('模型目录：' + res.error)

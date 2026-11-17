@@ -1,14 +1,15 @@
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
-import { ArrowUp, Blocks, ImagePlus, PanelsTopLeft, Square, X } from 'lucide-react'
+import { ArrowUp, Blocks, Brain, ImagePlus, PanelsTopLeft, SlidersHorizontal, Square, X } from 'lucide-react'
 import * as React from 'react'
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { modelShort } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { WidgetComposerDialog } from '@/components/intelligent/WidgetComposerDialog'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
-import type { AcpCommand, Attachment, CatalogSkill, Connector } from '@/lib/types'
+import type { AcpCommand, Attachment, CatalogSkill, ConfigOption, Connector } from '@/lib/types'
 
 const MODES: { value: string; label: string }[] = [
   { value: 'default', label: '每次询问' },
@@ -19,6 +20,52 @@ const MODES: { value: string; label: string }[] = [
   { value: 'bypassPermissions', label: '跳过权限' },
   { value: 'fullAccess', label: '完全放行' },
 ]
+
+const EFFORT_LABELS: Record<string, string> = {
+  disabled: '关闭',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+  max: '最高',
+  enabled: '默认',
+}
+
+// ACP 只给英文名，常见配置项在壳里换成中文；未知项回落到服务端文案。
+const CONFIG_LABELS: Record<string, string> = {
+  sandbox: '运行环境',
+  multitask: '多智能体协作',
+  context_window: '上下文窗口',
+  codeMode: '工具调用模式',
+}
+
+const CONFIG_VALUE_LABELS: Record<string, Record<string, string>> = {
+  sandbox: { true: '沙箱', false: '本地' },
+  codeMode: { off: '标准', all: 'PTC（全部工具）' },
+}
+
+const CONFIG_DESCRIPTIONS: Record<string, string> = {
+  sandbox: '命令在隔离沙箱里执行',
+  multitask: '自动拆分并行任务、协调子代理',
+  context_window: '本轮可用的上下文长度',
+  codeMode: '工具以 PTC 代码形式调用',
+}
+
+function effortLabel(value: string, fallback?: string) {
+  return EFFORT_LABELS[value] || fallback || value
+}
+
+function configLabel(option: ConfigOption) {
+  return CONFIG_LABELS[option.id] || option.name || option.id
+}
+
+function configDescription(option: ConfigOption) {
+  return CONFIG_DESCRIPTIONS[option.id] || option.description || ''
+}
+
+function configValueLabel(option: ConfigOption, value: string, fallback?: string) {
+  return CONFIG_VALUE_LABELS[option.id]?.[value] || fallback || value
+}
 
 const MAX_IMAGES = 4
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -137,10 +184,42 @@ export function Composer() {
   const setModel = useChatStore((s) => s.setModel)
   const mode = useChatStore((s) => s.mode)
   const setMode = useChatStore((s) => s.setMode)
+  const thoughtLevel = useChatStore((s) => s.thoughtLevel)
+  const setThoughtLevel = useChatStore((s) => s.setThoughtLevel)
+  const configOptions = useChatStore((s) => s.configOptions)
+  const configValues = useChatStore((s) => s.configValues)
+  const setConfig = useChatStore((s) => s.setConfig)
   const setMarketOpen = useUiStore((s) => s.setMarketOpen)
 
   const currentModel = models.find((item) => item.id === model)
   const modeLabel = MODES.find((item) => item.value === mode)?.label || mode
+
+  const thoughtOption = configOptions.find((item) => item.id === 'thought_level')
+  const effortOptions = React.useMemo(() => {
+    if (!thoughtOption) return []
+    const allowed = currentModel?.effortOptions || []
+    const base = allowed.length ? allowed : thoughtOption.options || []
+    const list = base.map((item) => ({ value: item.value, label: effortLabel(item.value, item.name) }))
+    if (
+      thoughtOption.options?.some((item) => item.value === 'enabled') &&
+      !list.some((item) => item.value === 'enabled')
+    ) {
+      list.push({ value: 'enabled', label: EFFORT_LABELS.enabled })
+    }
+    return list
+  }, [thoughtOption, currentModel])
+  const effortValue =
+    effortOptions.find((item) => item.value === thoughtLevel)?.value ||
+    effortOptions.find((item) => item.value === thoughtOption?.currentValue)?.value ||
+    effortOptions[0]?.value ||
+    ''
+  const effortLabelText =
+    effortOptions.find((item) => item.value === effortValue)?.label || effortValue
+
+  // model / mode / thought_level 已在底栏单独露出，弹层只放其余能力
+  const extraOptions = configOptions.filter(
+    (item) => item && !['model', 'mode', 'thought_level'].includes(item.id),
+  )
 
   const skills = React.useMemo(() => skillList(catalog.skills, commands), [catalog.skills, commands])
   const connectors = React.useMemo(() => connectorList(catalog.connectors), [catalog.connectors])
@@ -475,6 +554,25 @@ export function Composer() {
               </SelectContent>
             </Select>
 
+            {effortOptions.length > 0 && (
+              <Select value={effortValue} onValueChange={setThoughtLevel}>
+                <SelectTrigger
+                  className="h-6 w-auto gap-1 rounded border-0 bg-transparent px-1.5 text-[11.5px] text-ink-2 shadow-none hover:bg-surface-2 focus:ring-0"
+                  title="思考强度（effort）"
+                >
+                  <Brain className="size-3 shrink-0 text-ink-3" />
+                  <span className="max-w-[84px] truncate">思考·{effortLabelText}</span>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {effortOptions.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
             <Select value={mode} onValueChange={setMode}>
               <SelectTrigger
                 className="h-6 w-auto gap-1 rounded border-0 bg-transparent px-1.5 text-[11.5px] text-ink-2 shadow-none hover:bg-surface-2 focus:ring-0"
@@ -490,6 +588,92 @@ export function Composer() {
                 ))}
               </SelectContent>
             </Select>
+
+            {extraOptions.length > 0 && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    id="session-config"
+                    type="button"
+                    className="grid size-6 place-items-center rounded text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2"
+                    title="会话能力（运行环境 / 协作 / 上下文）"
+                  >
+                    <SlidersHorizontal className="size-3.5" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent side="top" align="start" className="w-64 p-2">
+                  <div className="px-2 pb-1.5 pt-0.5">
+                    <div className="text-[11px] font-medium text-ink-2">会话能力</div>
+                    <div className="text-[10px] text-ink-4">由当前 CodeBuddy 会话提供</div>
+                  </div>
+                  {extraOptions.map((option) => {
+                    const raw = configValues[option.id] ?? option.currentValue
+                    if (option.type === 'boolean') {
+                      const on = raw === true || raw === 'true'
+                      return (
+                        <div
+                          key={option.id}
+                          className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-surface-2/60"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-[11.5px] font-medium text-ink-2">{configLabel(option)}</div>
+                            {configDescription(option) && (
+                              <div className="truncate text-[10px] text-ink-4">{configDescription(option)}</div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void setConfig(option.id, !on)}
+                            className={cn(
+                              'h-5 shrink-0 rounded-full px-2 text-[10.5px] font-medium transition-colors',
+                              on
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-muted text-ink-3 hover:text-ink-2',
+                            )}
+                          >
+                            {on ? '开' : '关'}
+                          </button>
+                        </div>
+                      )
+                    }
+                    const values = option.options || []
+                    if (!values.length) return null
+                    const current = String(raw ?? values[0].value)
+                    return (
+                      <div
+                        key={option.id}
+                        className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-surface-2/60"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[11.5px] font-medium text-ink-2">{configLabel(option)}</div>
+                          {configDescription(option) && (
+                            <div className="truncate text-[10px] text-ink-4">{configDescription(option)}</div>
+                          )}
+                        </div>
+                        <Select value={current} onValueChange={(value) => void setConfig(option.id, value)}>
+                          <SelectTrigger className="h-6 w-auto shrink-0 gap-1 rounded border border-border bg-surface-2 px-1.5 text-[11px] text-ink-2 shadow-none hover:bg-muted focus:ring-0">
+                            <span className="max-w-[96px] truncate">
+                              {configValueLabel(
+                                option,
+                                current,
+                                values.find((item) => item.value === current)?.name,
+                              )}
+                            </span>
+                          </SelectTrigger>
+                          <SelectContent align="end" className="max-w-[240px]">
+                            {values.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>
+                                {configValueLabel(option, item.value, item.name)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )
+                  })}
+                </PopoverContent>
+              </Popover>
+            )}
 
             <span className="mx-1 h-3 w-px bg-border" />
 

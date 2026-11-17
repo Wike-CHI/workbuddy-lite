@@ -261,6 +261,35 @@ json demoModels() {
         {"effortOptions", json::array()}}});
 }
 
+// 演示模式的会话配置：结构与真实 ACP 一致，方便没登录态时验证控件
+json demoConfigOptions() {
+  json thoughts = json::array({{{"value", "low"}, {"name", "Low"}},
+                               {{"value", "high"}, {"name", "High"}},
+                               {{"value", "max"}, {"name", "Max"}},
+                               {{"value", "enabled"}, {"name", "On (default)"}}});
+  json sandbox = json::array({{{"value", "true"}, {"name", "Sandbox Environment"}},
+                              {{"value", "false"}, {"name", "Local Environment"}}});
+  return json::array(
+      {{{"type", "select"},
+        {"id", "thought_level"},
+        {"name", "Deep Thinking"},
+        {"description", "Choose reasoning effort level for this session"},
+        {"currentValue", "high"},
+        {"options", thoughts}},
+       {{"type", "select"},
+        {"id", "sandbox"},
+        {"name", "Sandbox"},
+        {"description", "Run shell commands inside the sandbox isolation layer"},
+        {"currentValue", "false"},
+        {"options", sandbox}},
+       {{"type", "boolean"},
+        {"id", "multitask"},
+        {"name", "Multitask"},
+        {"description", "Coordinate detached workers"},
+        {"category", "_codebuddy.ai/multitask"},
+        {"currentValue", false}}});
+}
+
 json loadStoreFile(const std::string& path) {
   std::ifstream in(path);
   if (!in) return json::object();
@@ -1001,13 +1030,24 @@ void Backend::wireAgentCallbacks() {
       if (it != aiText_.end()) it->second += jstr(ev.data, "text");
     }
     if (ev.type == "config") {
-      // 顺手记下当前模型；configOptions 里也带 model 的完整选项
-      for (const auto& opt : jval(ev.data, "options", json::array())) {
-        if (jstr(opt, "id") == "model") {
-          std::string cur = jstr(opt, "currentValue");
-          if (!cur.empty()) {
-            std::lock_guard<std::mutex> lk(modelMu_);
-            if (selectedModel_.empty()) selectedModel_ = cur;
+      // config_option_update 是全量快照，也是这条会话最权威的配置来源；
+      // 子代理/团队成员的配置不参与主会话快照。
+      json meta = jval(update, "_meta", json::object());
+      const bool memberEvent = meta.is_object() && meta.contains("codebuddy.ai/memberEvent");
+      json options = jval(ev.data, "options", json::array());
+      if (!memberEvent) {
+        if (options.is_array() && !options.empty()) {
+          std::lock_guard<std::mutex> lk(modelMu_);
+          configOptions_ = options;
+        }
+        // 顺手记下当前模型；configOptions 里也带 model 的完整选项
+        for (const auto& opt : options) {
+          if (jstr(opt, "id") == "model") {
+            std::string cur = jstr(opt, "currentValue");
+            if (!cur.empty()) {
+              std::lock_guard<std::mutex> lk(modelMu_);
+              if (selectedModel_.empty()) selectedModel_ = cur;
+            }
           }
         }
       }
@@ -1092,8 +1132,12 @@ void Backend::absorbSessionInfo(const json& info, const std::string& uiId) {
     setModelCatalog(available, jstr(models, "currentModelId"));
   }
   json configOptions = jval(info, "configOptions", json::array());
-  if (configOptions.is_array() && !configOptions.empty() && !uiId.empty()) {
-    emit(uiId, "config", json{{"options", configOptions}});
+  if (configOptions.is_array() && !configOptions.empty()) {
+    {
+      std::lock_guard<std::mutex> lk(modelMu_);
+      configOptions_ = configOptions;
+    }
+    if (!uiId.empty()) emit(uiId, "config", json{{"options", configOptions}});
   }
 }
 
@@ -1110,6 +1154,8 @@ bool Backend::ensureModelCatalog(std::string& err) {
   if (demo_) {
     std::lock_guard<std::mutex> lk(modelMu_);
     modelCatalog_ = {{"models", demoModels()}, {"currentId", "deepseek-v4.1-flash"}};
+    // 只在首次填充；否则每次 /api/models 都会把用户改过的档位冲掉
+    if (!configOptions_.is_array() || configOptions_.empty()) configOptions_ = demoConfigOptions();
     if (selectedModel_.empty()) selectedModel_ = "deepseek-v4.1-flash";
     return true;
   }
@@ -1556,6 +1602,7 @@ json Backend::createSession(const std::string& cwd, const std::string& title) {
             {"acpSessionId", ""},
             {"model", selectedModel()},
             {"mode", "fullAccess"},
+            {"config", json::object()},
             {"createdAt", nowMs()},
             {"updatedAt", nowMs()},
             {"events", json::array()},
@@ -1651,6 +1698,7 @@ std::string Backend::acpSessionFor(const std::string& uiId, std::string& err) {
     if (it != uiToAcp_.end() && !it->second.empty()) return it->second;
   }
   std::string cwd;
+  std::string storedAcp;
   {
     std::lock_guard<std::mutex> lk(storeMu_);
     json* s = findSession(uiId);
@@ -1659,17 +1707,32 @@ std::string Backend::acpSessionFor(const std::string& uiId, std::string& err) {
       return "";
     }
     cwd = jstr(*s, "cwd", currentCwd());
+    storedAcp = jstr(*s, "acpSessionId");
   }
   json info;
   try {
     if (!ensureAgent(err)) return "";
-    info = takeSpareSession(cwd);
-    if (!info.is_object() || info.empty()) info = client_->newSessionInfo(cwd);
+    // 重启应用后继续旧会话：先让 CLI 把历史会话 load 回来，再建立映射。
+    // 重放事件此时还没有 uiId，会被 onUpdate 直接丢掉，不会重复灌进界面。
+    if (!storedAcp.empty()) {
+      try {
+        info = client_->loadSession(storedAcp, cwd);
+        if (!info.is_object()) info = json::object();
+        if (info.empty()) info = json{{"sessionId", storedAcp}};
+      } catch (const std::exception& e) {
+        logf("load session " + storedAcp + " 失败，改开新会话: " + e.what());
+        info = json::object();
+      }
+    }
+    if (info.empty()) {
+      info = takeSpareSession(cwd);
+      if (!info.is_object() || info.empty()) info = client_->newSessionInfo(cwd);
+    }
   } catch (const std::exception& e) {
     err = e.what();
     return "";
   }
-  std::string acpSid = jstr(info, "sessionId");
+  std::string acpSid = jstr(info, "sessionId", storedAcp);
   if (acpSid.empty()) {
     err = "创建 ACP 会话失败";
     return "";
@@ -1769,15 +1832,57 @@ void Backend::runPrompt(const std::string& uiId, const std::string& text, const 
     running_.erase(uiId);
     return;
   }
+  // 每次 set_config_option 都会带回权威的全量 configOptions；顺手更新快照，
+  // 避免 /api/models 停留在预会话或进程重启前的旧值。
+  bool configRefreshed = false;
+  auto applyOption = [&](const std::string& id, const json& value, const std::string& type) {
+    json result = client_->setConfigOption(acpSid, id, value, type);
+    json options = jval(result, "configOptions", json::array());
+    if (options.is_array() && !options.empty()) {
+      std::lock_guard<std::mutex> lk(modelMu_);
+      configOptions_ = options;
+      configRefreshed = true;
+    }
+  };
   try {
-    if (!model.empty()) client_->setConfigOption(acpSid, "model", model);
+    if (!model.empty()) applyOption("model", model, "");
   } catch (const std::exception& e) {
     logf(std::string("set model 失败: ") + e.what());
   }
   try {
-    if (!mode.empty()) client_->setConfigOption(acpSid, "mode", mode);
+    if (!mode.empty()) applyOption("mode", mode, "");
   } catch (const std::exception& e) {
     logf(std::string("setConfigOption 失败: ") + e.what());
+  }
+  // 会话级配置（effort / sandbox / multitask / context_window …）每轮同步一次，
+  // 新建 ACP 会话或进程重启后都能回到用户上次的选择。
+  json sessionConfig = json::object();
+  {
+    std::lock_guard<std::mutex> lk(storeMu_);
+    if (json* s = findSession(uiId)) sessionConfig = jval(*s, "config", json::object());
+  }
+  if (sessionConfig.is_object()) {
+    for (auto it = sessionConfig.begin(); it != sessionConfig.end(); ++it) {
+      const std::string& id = it.key();
+      if (id == "model" || id == "mode") continue;
+      const json& value = it.value();
+      std::string type = value.is_boolean() ? "boolean" : (value.is_string() ? "select" : "");
+      if (type.empty()) continue;
+      try {
+        applyOption(id, value, type);
+      } catch (const std::exception& e) {
+        logf("set config " + id + " 失败: " + e.what());
+      }
+    }
+  }
+  // 把真正生效的档位推给 UI；session/load 回来的快照可能是旧默认值
+  if (configRefreshed) {
+    json options;
+    {
+      std::lock_guard<std::mutex> lk(modelMu_);
+      options = configOptions_;
+    }
+    if (options.is_array() && !options.empty()) emit(uiId, "config", json{{"options", options}});
   }
   try {
     json result = client_->prompt(acpSid, text, images);
@@ -2124,6 +2229,17 @@ void Backend::handleChat(const httplib::Request& req, httplib::Response& res) {
   std::string mode = jstr(body, "mode");
   std::string model = jstr(body, "model", selectedModel());
   std::string uiId = jstr(body, "sessionId");
+  json incomingConfig = jval(body, "config", json::object());
+
+  auto mergeConfig = [&](json* s) {
+    if (!s || !incomingConfig.is_object()) return;
+    json cfg = jval(*s, "config", json::object());
+    if (!cfg.is_object()) cfg = json::object();
+    for (auto it = incomingConfig.begin(); it != incomingConfig.end(); ++it) {
+      if (it.value().is_string() || it.value().is_boolean()) cfg[it.key()] = it.value();
+    }
+    (*s)["config"] = cfg;
+  };
 
   json images = saveImages(incomingImages);
   if (text.empty() && images.empty()) {
@@ -2144,6 +2260,7 @@ void Backend::handleChat(const httplib::Request& req, httplib::Response& res) {
       }
       if (!mode.empty()) (*s)["mode"] = mode;
       if (!model.empty()) (*s)["model"] = model;
+      mergeConfig(s);
     }
   }
   if (needCreate) {
@@ -2152,6 +2269,7 @@ void Backend::handleChat(const httplib::Request& req, httplib::Response& res) {
     if (json* s = findSession(uiId)) {
       if (!model.empty()) (*s)["model"] = model;
       if (!mode.empty()) (*s)["mode"] = mode;
+      mergeConfig(s);
     }
   }
 
@@ -2280,11 +2398,14 @@ void Backend::handleModels(const httplib::Request&, httplib::Response& res) {
   std::string err;
   ensureModelCatalog(err);
   json out;
+  json configOptions;
   {
     std::lock_guard<std::mutex> lk(modelMu_);
     out = modelCatalog_;
     out["selected"] = selectedModel_.empty() ? jstr(modelCatalog_, "currentId") : selectedModel_;
+    configOptions = configOptions_;
   }
+  out["config"] = json{{"options", configOptions}};
   out["quota"] = latestQuota();
   out["demo"] = demo_;
   out["agentReady"] = agentReady_.load();
@@ -2317,7 +2438,12 @@ void Backend::handleSetModel(const httplib::Request& req, httplib::Response& res
   }
   if (!acpSid.empty() && client_) {
     try {
-      client_->setConfigOption(acpSid, "model", model);
+      json result = client_->setConfigOption(acpSid, "model", model);
+      json options = jval(result, "configOptions", json::array());
+      if (options.is_array() && !options.empty()) {
+        std::lock_guard<std::mutex> lk(modelMu_);
+        configOptions_ = options;
+      }
       applied = true;
     } catch (const std::exception& e) {
       error = e.what();
@@ -2329,6 +2455,89 @@ void Backend::handleSetModel(const httplib::Request& req, httplib::Response& res
     if (json* s = findSession(uiId)) (*s)["model"] = model;
   }
   res.set_content(dumpJson(json{{"ok", error.empty()}, {"applied", applied}, {"model", model}, {"error", error}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleConfig(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (!body.is_object()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "请求体不是 JSON 对象"}}), "application/json");
+    return;
+  }
+  std::string configId = jstr(body, "configId");
+  std::string uiId = jstr(body, "sessionId");
+  std::string type = jstr(body, "type");
+  if (configId.empty() || !body.contains("value")) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "缺少 configId 或 value"}}), "application/json");
+    return;
+  }
+  json value = body["value"];
+  if (!value.is_string() && !value.is_boolean()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "value 必须是字符串或布尔值"}}), "application/json");
+    return;
+  }
+  if (type.empty()) type = value.is_boolean() ? "boolean" : "select";
+
+  std::string acpSid;
+  if (!uiId.empty()) {
+    std::lock_guard<std::mutex> lk(mapMu_);
+    auto it = uiToAcp_.find(uiId);
+    if (it != uiToAcp_.end()) acpSid = it->second;
+  }
+
+  bool applied = false;
+  std::string error;
+  json options = json::array();
+  if (!acpSid.empty() && client_) {
+    try {
+      json result = client_->setConfigOption(acpSid, configId, value, type);
+      options = jval(result, "configOptions", json::array());
+      if (options.is_array() && !options.empty()) {
+        std::lock_guard<std::mutex> lk(modelMu_);
+        configOptions_ = options;
+      }
+      applied = true;
+    } catch (const std::exception& e) {
+      error = e.what();
+      logf(std::string("handleConfig 失败: ") + error);
+    }
+  }
+
+  // 没有活跃 ACP 会话时也同步快照，保证 /api/models 与即将持久化的值一致
+  if (error.empty() && !applied) {
+    std::lock_guard<std::mutex> lk(modelMu_);
+    if (configOptions_.is_array()) {
+      for (auto& opt : configOptions_) {
+        if (jstr(opt, "id") == configId) opt["currentValue"] = value;
+      }
+    }
+  }
+
+  // 失败不落盘，避免下一轮 prompt 反复重放同一个非法值。
+  if (error.empty()) {
+    {
+      std::lock_guard<std::mutex> lk(storeMu_);
+      if (json* s = findSession(uiId)) {
+        json cfg = jval(*s, "config", json::object());
+        if (!cfg.is_object()) cfg = json::object();
+        cfg[configId] = value;
+        (*s)["config"] = cfg;
+        // 模型/权限模式另有独立字段，保持会话摘要同步。
+        if (configId == "model" && value.is_string()) (*s)["model"] = value;
+        if (configId == "mode" && value.is_string()) (*s)["mode"] = value;
+      }
+    }
+    saveStore();
+  }
+  res.set_content(dumpJson(json{{"ok", error.empty()},
+                                {"applied", applied},
+                                {"configId", configId},
+                                {"value", value},
+                                {"options", options},
+                                {"error", error}}),
                   "application/json; charset=utf-8");
 }
 
@@ -3312,6 +3521,7 @@ void Backend::setupRoutes() {
   srv_.Get("/api/catalog", [this](const auto& r, auto& s) { handleCatalog(r, s); });
   srv_.Get("/api/models", [this](const auto& r, auto& s) { handleModels(r, s); });
   srv_.Post("/api/model", [this](const auto& r, auto& s) { handleSetModel(r, s); });
+  srv_.Post("/api/config", [this](const auto& r, auto& s) { handleConfig(r, s); });
   srv_.Get("/api/usage", [this](const auto& r, auto& s) { handleUsage(r, s); });
   srv_.Get("/api/workspaces", [this](const auto& r, auto& s) { handleWorkspaces(r, s); });
   srv_.Post("/api/workspaces/open", [this](const auto& r, auto& s) { handleWorkspaceOpen(r, s); });

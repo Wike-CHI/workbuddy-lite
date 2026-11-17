@@ -116,6 +116,7 @@ class Backend {
   void handleIuiSet(const httplib::Request&, httplib::Response&);
   void handleModels(const httplib::Request&, httplib::Response&);
   void handleSetModel(const httplib::Request&, httplib::Response&);
+  void handleConfig(const httplib::Request&, httplib::Response&);
   void handleUsage(const httplib::Request&, httplib::Response&);
   void handleWorkspaces(const httplib::Request&, httplib::Response&);
   void handleWorkspaceOpen(const httplib::Request&, httplib::Response&);
@@ -169,9 +170,10 @@ class Backend {
   std::map<std::string, std::string> permResults_;   // 演示模式下前端的选择结果
   std::set<std::string> running_;                // 正在跑的 uiId
 
-  // 模型目录 + 预热会话（第一次点模型菜单时创建，随后被首个会话复用）
+  // 模型目录 + 会话配置快照 + 预热会话（第一次点模型菜单时创建，随后被首个会话复用）
   mutable   std::mutex modelMu_;
   json modelCatalog_ = json{{"models", json::array()}, {"currentId", ""}};
+  json configOptions_ = json::array();
   std::string selectedModel_;
   json spareAcp_ = json::object();
 

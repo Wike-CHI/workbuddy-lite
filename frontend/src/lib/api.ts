@@ -2,6 +2,7 @@ import type {
   AcpEvent,
   Bootstrap,
   Catalog,
+  ConfigOption,
   ModelInfo,
   Quota,
   SessionDetail,
@@ -50,6 +51,7 @@ export const api = {
     text: string
     mode: string
     model: string
+    config?: Record<string, string | boolean>
     images: { mime: string; data: string; name: string }[]
     connectors: string[]
   }) => post<{ sessionId: string; images: { url: string; mime: string; name: string }[] }>('/api/chat', body),
@@ -57,11 +59,21 @@ export const api = {
   permission: (requestId: string, optionId: string) =>
     post<{ ok: boolean }>('/api/permission', { requestId, optionId }),
   models: () =>
-    request<{ models: ModelInfo[]; currentId: string; selected?: string; quota?: Quota; error?: string }>(
-      '/api/models',
-    ),
+    request<{
+      models: ModelInfo[]
+      currentId: string
+      selected?: string
+      config?: { options: ConfigOption[] }
+      quota?: Quota
+      error?: string
+    }>('/api/models'),
   setModel: (model: string, sessionId: string) =>
     post<{ ok: boolean; applied: boolean; model: string; error?: string }>('/api/model', { model, sessionId }),
+  setConfig: (configId: string, value: string | boolean, sessionId: string, type?: string) =>
+    post<{ ok: boolean; applied: boolean; configId: string; value: string | boolean; options?: ConfigOption[]; error?: string }>(
+      '/api/config',
+      { configId, value, sessionId, type },
+    ),
   usage: () => request<UsageSummary>('/api/usage'),
   workspaces: () =>
     request<{
