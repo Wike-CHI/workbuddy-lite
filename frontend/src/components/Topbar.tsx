@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { fmtCredits, fmtNum, fmtReset } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
+import { useTeamStore } from '@/store/team'
 import { useThemeStore } from '@/store/theme'
 import { useUiStore } from '@/store/ui'
 import { useWorkbenchStore } from '@/store/workbench'
@@ -15,6 +16,7 @@ export function Topbar() {
   const workspaceName = useChatStore((s) => s.workspaceName)
   const workspaceFolders = useChatStore((s) => s.workspaceFolders)
   const activeTitle = useChatStore((s) => s.activeTitle)
+  const activeChannel = useTeamStore((s) => s.channels.find((item) => item.id === s.activeChannelId))
   const credits = useChatStore((s) => s.credits)
   const quota = useChatStore((s) => s.quota)
   const contextUsed = useChatStore((s) => s.contextUsed)
@@ -33,7 +35,7 @@ export function Topbar() {
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background px-3">
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <h1 className="truncate text-[13px] font-medium tracking-[-0.01em] text-foreground">
-          {activeTitle || '新会话'}
+          {activeChannel ? activeChannel.name : activeTitle || '新会话'}
         </h1>
         <span className="shrink-0 text-ink-4">/</span>
         <button

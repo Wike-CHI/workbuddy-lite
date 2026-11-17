@@ -786,6 +786,7 @@ Backend::Backend(bool demo, std::string cwd, std::string webRoot, bool fresh)
 
   initStore();
   if (demo_) initDemoMarket();
+  if (demo_) initDemoTeam();
 
   // 没显式传 --cwd 时沿用上次的工作空间；带了 --cwd 时优先把它归到所属工作空间
   if (!cwd_.empty() && !isDirectoryPath(cwd_)) cwd_.clear();
@@ -1363,6 +1364,837 @@ json Backend::agentGet(const std::string& path) {
   } catch (...) {
     return json::object();
   }
+}
+
+json Backend::agentSend(const std::string& method, const std::string& path, const json& body,
+                        int timeoutSec) {
+  if (!host_ || !host_->ready()) return json{{"status", 0}, {"error", "CLI 未就绪"}};
+  try {
+    httplib::Client cli(host_->baseUrl());
+    cli.set_connection_timeout(3, 0);
+    cli.set_read_timeout(timeoutSec, 0);
+    cli.set_write_timeout(timeoutSec, 0);
+    httplib::Headers headers{{"X-CodeBuddy-Request", "1"}};
+    const std::string payload = body.is_null() ? std::string() : dumpJson(body);
+    httplib::Result res;
+    if (method == "POST") {
+      res = cli.Post(path.c_str(), headers, payload, "application/json");
+    } else if (method == "PATCH") {
+      res = cli.Patch(path.c_str(), headers, payload, "application/json");
+    } else {
+      res = cli.Get(path.c_str(), headers);
+    }
+    if (!res) {
+      const bool timeout = res.error() == httplib::Error::Read;
+      return json{{"status", 0},
+                  {"error", timeout ? "CLI 响应超时" : "CLI 连接中断"},
+                  {"timeout", timeout}};
+    }
+    json doc = json::parse(res->body, nullptr, false);
+    if (doc.is_discarded()) doc = json::object();
+    return json{{"status", res->status}, {"doc", doc}};
+  } catch (const std::exception& e) {
+    return json{{"status", 0}, {"error", e.what()}};
+  }
+}
+
+namespace {
+
+// 频道 / 成员 id 是 UUID；只放行 URL 安全字符，避免把参数拼进路径时被注入
+bool teamIdOk(const std::string& id) {
+  if (id.empty() || id.size() > 80) return false;
+  for (unsigned char c : id) {
+    if (!(std::isalnum(c) || c == '-' || c == '_')) return false;
+  }
+  return true;
+}
+
+std::string teamErrorText(const json& doc) {
+  json err = jval(doc, "error", json::object());
+  std::string msg = jstr(err, "message");
+  if (msg.empty()) msg = jstr(err, "code");
+  if (msg.empty()) msg = jstr(doc, "error");
+  return msg.empty() ? "频道服务返回未知错误" : msg;
+}
+
+json teamLocalMessage(const std::string& text, const json& mentions, const std::string& id) {
+  json msg = {{"id", id}, {"at", nowMs()}, {"from", "user"}, {"text", text}};
+  if (mentions.is_array() && !mentions.empty()) msg["mentionAgentIds"] = mentions;
+  return msg;
+}
+
+}  // namespace
+
+json Backend::trimTeamAgent(const json& agent) {
+  json out = {{"id", jstr(agent, "id")}, {"name", jstr(agent, "name")}};
+  for (const char* key : {"avatarVariant", "title", "model", "permissionMode", "homeCwd"}) {
+    json value = jval(agent, key);
+    if (!value.is_null()) out[key] = value;
+  }
+  json last = jval(agent, "lastActiveAt");
+  if (last.is_number()) out["lastActiveAt"] = last;
+  // description 是人设正文（实测单个可达数百字，含多段），列表态不需要，直接不返回
+  return out;
+}
+
+json Backend::trimTeamChannel(const json& channel) {
+  json out = {{"id", jstr(channel, "id")}, {"name", jstr(channel, "name")}};
+  json members = jval(channel, "memberAgentIds", json::array());
+  out["memberAgentIds"] = members.is_array() ? members : json::array();
+  out["leadAgentId"] = jstr(channel, "leadAgentId");
+  json muted = jval(channel, "mutedAgentIds", json::array());
+  out["mutedAgentIds"] = muted.is_array() ? muted : json::array();
+  std::string preview = jstr(channel, "lastPreview");
+  out["lastPreview"] = utf8Truncate(preview, 240);
+  json active = jval(channel, "lastActiveAt");
+  out["lastActiveAt"] = active.is_number() ? active : json(0);
+  json unread = jval(channel, "unreadByUser");
+  out["unreadByUser"] = unread.is_number() ? unread : json(0);
+  out["homeCwd"] = jstr(channel, "homeCwd");
+  return out;
+}
+
+json Backend::trimTeamMessage(const json& message) {
+  json out = {{"id", jstr(message, "id")},
+              {"at", jval(message, "at", 0)},
+              {"from", jstr(message, "from", "user")},
+              {"text", jstr(message, "text")}};
+  for (const char* key : {"agentId", "taskId", "taskEvent"}) {
+    std::string value = jstr(message, key);
+    if (!value.empty()) out[key] = value;
+  }
+  json mentions = jval(message, "mentionAgentIds", json::array());
+  if (mentions.is_array() && !mentions.empty()) out["mentionAgentIds"] = mentions;
+  // 实测系统消息的 kind 是 "system"（文档早期写的是 "systemEvent"）；两种都归一成 system
+  const std::string kind = jstr(message, "kind");
+  if (kind == "system" || kind == "systemEvent") {
+    out["kind"] = "system";
+  } else if (!kind.empty()) {
+    out["kind"] = kind;
+  }
+  json event = jval(message, "systemEvent", json::object());
+  if (event.is_object() && !event.empty()) {
+    json trimmed = {{"type", jstr(event, "type")}, {"reason", jstr(event, "reason")}};
+    json names = jval(event, "names", json::array());
+    if (names.is_array() && !names.empty()) trimmed["names"] = names;
+    out["systemEvent"] = trimmed;
+  }
+  // widget / taskPayload / attachments 体积大且 v1 不渲染；text 已经能表达内容
+  return out;
+}
+
+json Backend::teamStateFromCli() {
+  json resp = agentSend("GET", "/api/v1/agent-home", json(), 8);
+  const int status = resp.value("status", 0);
+  if (status != 200) {
+    std::string reason = (status == 404) ? "当前 CodeBuddy 版本没有频道接口（需要 2.184+）"
+                                         : "连不上 CodeBuddy 频道服务";
+    std::string detail = jstr(resp, "error");
+    if (!detail.empty() && status != 404) reason += "：" + detail;
+    return json{{"enabled", false},
+                {"reason", reason},
+                // CLI 的 --serve 是后台预热：状态 0 / 5xx 时前端值得再试几次；404 是版本不支持
+                {"retry", status == 0 || status >= 500},
+                {"agents", json::array()},
+                {"channels", json::array()},
+                {"presence", json::array()}};
+  }
+  json doc = jval(resp, "doc", json::object());
+  json data = jval(doc, "data", json::object());
+  if (!data.is_object() || data.empty()) {
+    return json{{"enabled", false},
+                {"reason", "频道服务没有返回数据"},
+                {"retry", true},
+                {"agents", json::array()},
+                {"channels", json::array()},
+                {"presence", json::array()}};
+  }
+
+  const std::string defaultAgentId = jstr(data, "defaultAgentId");
+  json agents = json::array();
+  for (const auto& agent : jval(data, "agents", json::array())) {
+    if (!agent.is_object()) continue;
+    if (jstr(agent, "visibility", "visible") == "hidden") continue;
+    // 1:1 分身不能进频道，列表里也不展示，避免用户误 @
+    if (!defaultAgentId.empty() && jstr(agent, "id") == defaultAgentId) continue;
+    agents.push_back(trimTeamAgent(agent));
+  }
+
+  json channels = json::array();
+  for (const auto& channel : jval(data, "channels", json::array())) {
+    if (!channel.is_object()) continue;
+    if (jstr(channel, "visibility", "visible") == "hidden") continue;
+    channels.push_back(trimTeamChannel(channel));
+  }
+
+  json presence = json::array();
+  json view = jval(data, "viewModel", json::object());
+  for (const auto& item : jval(view, "presence", json::array())) {
+    if (!item.is_object()) continue;
+    presence.push_back({{"agentId", jstr(item, "agentId")},
+                        {"availability", jstr(item, "availability", "idle")}});
+  }
+
+  json maxMembers = jval(data, "channelMaxMembers");
+  return json{{"enabled", data.value("enabled", true)},
+              {"orchestrationEnabled", data.value("orchestrationEnabled", false)},
+              {"channelMaxMembers", maxMembers.is_number() ? maxMembers : json(12)},
+              {"defaultAgentId", defaultAgentId},
+              {"agents", agents},
+              {"channels", channels},
+              {"presence", presence}};
+}
+
+json Backend::teamPageFromCli(const std::string& channelId, const std::string& before,
+                              const std::string& after, json& page) {
+  std::string path = "/api/v1/agent-home/channels/" + channelId + "/messages/page";
+  std::string query;
+  if (!before.empty()) query += "before=" + httplib::encode_query_component(before);
+  if (!after.empty()) {
+    query += (query.empty() ? "" : "&");
+    query += "after=" + httplib::encode_query_component(after);
+  }
+  if (!query.empty()) path += "?" + query;
+  page = agentSend("GET", path, json(), 10);
+  if (page.value("status", 0) != 200) return json::object();
+  json doc = jval(page, "doc", json::object());
+  json data = jval(doc, "data", json::object());
+  return data.is_object() ? data : json::object();
+}
+
+void Backend::teamSeedCursor(const std::string& channelId, const std::string& after, bool reset) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  auto& watch = teamWatches_[channelId];
+  watch.inited = true;
+  if (!after.empty()) watch.after = after;
+  if (reset) {
+    watch.queue.clear();
+    watch.seq = 0;
+  }
+}
+
+void Backend::initDemoTeam() {
+  auto agent = [](const std::string& id, const std::string& name, int variant, const std::string& title,
+                  const std::string& model) {
+    return json{{"id", id},
+                {"name", name},
+                {"avatarVariant", variant},
+                {"title", title},
+                {"model", model},
+                {"permissionMode", "fullAccess"},
+                {"homeCwd", "d:/work/falcon"},
+                {"lastActiveAt", nowMs() - 3600000}};
+  };
+  json agents = json::array(
+      {agent("demo-agent-review", "评审", 2, "接口与安全评审", "deepseek-v4.1-flash"),
+       agent("demo-agent-backend", "后端", 4, "服务端与接口实现", "deepseek-v4.1-flash"),
+       agent("demo-agent-frontend", "前端", 1, "Web 与交互实现", "glm-5.3"),
+       agent("demo-agent-sec", "安全", 5, "鉴权与风险复核", "hy4std")});
+
+  const std::string cwd = "d:/work/falcon";
+  json channels = json::array(
+      {{{"id", "demo-1"},
+        {"name", "项目 Falcon"},
+        {"memberAgentIds", json::array({"demo-agent-review", "demo-agent-backend", "demo-agent-frontend",
+                                        "demo-agent-sec"})},
+        {"leadAgentId", "demo-agent-review"},
+        {"mutedAgentIds", json::array()},
+        {"lastPreview", "评审 完成了接口契约评审"},
+        {"lastActiveAt", nowMs() - 120000},
+        {"unreadByUser", 3},
+        {"homeCwd", cwd}},
+       {{"id", "demo-2"},
+        {"name", "发布值守"},
+        {"memberAgentIds", json::array({"demo-agent-backend", "demo-agent-frontend", "demo-agent-sec"})},
+        {"leadAgentId", ""},
+        {"mutedAgentIds", json::array()},
+        {"lastPreview", "后端 已冻结 main，等 CI 绿"},
+        {"lastActiveAt", nowMs() - 900000},
+        {"unreadByUser", 0},
+        {"homeCwd", cwd}}});
+
+  const int64_t base = nowMs() - 7200000;
+  auto user = [&](int64_t at, const std::string& text, const json& mentions = json::array()) {
+    json m = {{"id", "demo-m-" + std::to_string(at) + "-u"}, {"at", at}, {"from", "user"}, {"text", text}};
+    if (!mentions.empty()) m["mentionAgentIds"] = mentions;
+    return m;
+  };
+  auto bot = [&](int64_t at, const std::string& agentId, const std::string& text) {
+    return json{{"id", "demo-m-" + std::to_string(at) + "-" + agentId},
+                {"at", at},
+                {"from", "agent"},
+                {"agentId", agentId},
+                {"text", text}};
+  };
+  auto sys = [&](int64_t at, const std::string& text, const std::string& type, const std::string& reason,
+                 const json& names) {
+    return json{{"id", "demo-s-" + std::to_string(at)},
+                {"at", at},
+                {"from", "system"},
+                {"kind", "system"},
+                {"text", text},
+                {"systemEvent", {{"type", type}, {"reason", reason}, {"names", names}}}};
+  };
+
+  json main = json::array();
+  main.push_back(user(base, "@评审 先看接口契约，安全那块交给 @后端",
+                      json::array({"demo-agent-review", "demo-agent-backend"})));
+  main.push_back(bot(base + 40000, "demo-agent-review",
+                     "我先看接口契约，安全那块归 @后端。\n\n- 入参统一用 `traceId`\n- 失败路径必须有错误码"));
+  main.push_back(bot(base + 55000, "demo-agent-review",
+                     "接口清单我列在 `docs/api-contract.md`，先按这个对。"));
+  main.push_back(bot(base + 90000, "demo-agent-backend", "收到，15 分钟后给初版。"));
+  main.push_back(user(base + 150000, "先按上周的方案走"));
+  main.push_back(sys(base + 160000, "评审 把这一棒交给 后端", "room-handoff", "handoff",
+                     json::array({"评审", "后端"})));
+  main.push_back(bot(base + 220000, "demo-agent-backend",
+                     "接口 stub 已放到 `api/stub/openapi.yaml`，字段先按契约留空。"));
+  main.push_back(sys(base + 300000, "本轮超时收场（轮到 安全 时未见回应）。", "room-turn-ended", "timeout",
+                     json::array({"安全"})));
+  main.push_back(user(base + 380000, "@安全 帮忙看下鉴权那块", json::array({"demo-agent-sec"})));
+  main.push_back(bot(base + 440000, "demo-agent-sec",
+                     "鉴权走 mTLS；本地联调用 dev 证书，别把生产 CA 带进仓库。"));
+  main.push_back(bot(base + 520000, "demo-agent-review",
+                     "补充一条：`POST /orders` 的幂等键用 `Idempotency-Key`，不要塞进 body。\n\n```http\nIdempotency-Key: 7f3c…\n```"));
+  main.push_back(user(base + 600000, "好，按这个改"));
+  main.push_back(sys(base + 660000, "评审 完成了 t3「接口契约」", "task-event", "completed",
+                     json::array({"评审"})));
+  main.push_back(bot(base + 720000, "demo-agent-backend", "改完了，回滚脚本也一起加了。"));
+  main.push_back(user(base + 790000, "@all 明天十点前把自测结论贴上来",
+                      json::array({"demo-agent-review", "demo-agent-backend", "demo-agent-frontend",
+                                   "demo-agent-sec"})));
+  main.push_back(bot(base + 850000, "demo-agent-frontend", "前端这边把空态和错误态都补了，明早贴截图。"));
+  main.push_back(bot(base + 870000, "demo-agent-frontend",
+                     "截图放在 `docs/ui/team-empty.png`，今晚再补一张深色。"));
+  main.push_back(sys(base + 900000, "本轮收场：所有被叫到的成员都已回复。", "room-turn-ended", "done",
+                     json::array({"评审", "前端"})));
+
+  json release = json::array();
+  release.push_back(user(base + 1000000, "发布窗口定在周四 20:00，先冻 main。"));
+  release.push_back(bot(base + 1050000, "demo-agent-backend", "已冻结 main，等 CI 绿。"));
+  release.push_back(sys(base + 1100000, "本轮收场。", "room-turn-ended", "done", json::array({"后端"})));
+  release.push_back(bot(base + 1160000, "demo-agent-frontend", "回滚脚本已就位，`scripts/rollback.ps1`。"));
+  release.push_back(user(base + 1220000, "@安全 帮看下发布前的权限清单", json::array({"demo-agent-sec"})));
+  release.push_back(bot(base + 1280000, "demo-agent-sec", "清单没问题；生产密钥走 KMS，不在发布包里。"));
+
+  std::lock_guard<std::mutex> lk(teamMu_);
+  demoTeam_ = json{{"agents", agents},
+                   {"channels", channels},
+                   {"messages", {{"demo-1", main}, {"demo-2", release}}},
+                   {"pending", json::array()}};
+  teamWatches_.clear();
+}
+
+json Backend::demoTeamState() {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  json presence = json::array();
+  for (const auto& agent : jval(demoTeam_, "agents", json::array())) {
+    const std::string id = jstr(agent, "id");
+    presence.push_back({{"agentId", id}, {"availability", id == "demo-agent-sec" ? "offline" : "active"}});
+  }
+  return json{{"enabled", true},
+              {"orchestrationEnabled", false},
+              {"channelMaxMembers", 12},
+              {"defaultAgentId", "demo-agent-default"},
+              {"agents", jval(demoTeam_, "agents", json::array())},
+              {"channels", jval(demoTeam_, "channels", json::array())},
+              {"presence", presence}};
+}
+
+void Backend::demoTeamFlush() {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  const int64_t now = nowMs();
+  json pending = jval(demoTeam_, "pending", json::array());
+  json keep = json::array();
+  json messages = jval(demoTeam_, "messages", json::object());
+  for (const auto& item : pending) {
+    if (jval(item, "dueAt", 0).get<int64_t>() > now) {
+      keep.push_back(item);
+      continue;
+    }
+    const std::string channelId = jstr(item, "channelId");
+    json message = jval(item, "message", json::object());
+    if (channelId.empty() || !message.is_object()) continue;
+    if (!messages.contains(channelId) || !messages[channelId].is_array()) messages[channelId] = json::array();
+    messages[channelId].push_back(message);
+    auto& watch = teamWatches_[channelId];
+    watch.inited = true;
+    watch.seq += 1;
+    watch.queue.push_back({{"seq", watch.seq}, {"channelId", channelId}, {"message", message}});
+  }
+  demoTeam_["messages"] = messages;
+  demoTeam_["pending"] = keep;
+}
+
+json Backend::demoTeamMessages(const std::string& channelId) {
+  demoTeamFlush();
+  std::lock_guard<std::mutex> lk(teamMu_);
+  json messages = jval(demoTeam_, "messages", json::object());
+  json list = json::array();
+  if (messages.contains(channelId) && messages[channelId].is_array()) {
+    list = messages[channelId];
+  }
+  return json{{"messages", list}, {"hasMore", false}, {"before", ""}};
+}
+
+json Backend::demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions) {
+  demoTeamFlush();
+  const int64_t now = nowMs();
+  const std::string localId = "demo-local-" + std::to_string(now);
+  json message = teamLocalMessage(text, mentions, localId);
+
+  // 频道成员顺序决定谁先接、谁接第二棒；@ 谁就从谁开始
+  json channel = json::object();
+  json agents = json::array();
+  {
+    std::lock_guard<std::mutex> lk(teamMu_);
+    for (const auto& item : jval(demoTeam_, "channels", json::array())) {
+      if (jstr(item, "id") == channelId) channel = item;
+    }
+    agents = jval(demoTeam_, "agents", json::array());
+    json messages = jval(demoTeam_, "messages", json::object());
+    if (!messages.contains(channelId) || !messages[channelId].is_array()) messages[channelId] = json::array();
+    messages[channelId].push_back(message);
+    demoTeam_["messages"] = messages;
+
+    auto& watch = teamWatches_[channelId];
+    watch.inited = true;
+    watch.seq += 1;
+    watch.queue.push_back({{"seq", watch.seq}, {"channelId", channelId}, {"message", message}});
+  }
+
+  auto nameOf = [&](const std::string& id) {
+    for (const auto& agent : agents) {
+      if (jstr(agent, "id") == id) return jstr(agent, "name");
+    }
+    return std::string("成员");
+  };
+  auto infoOf = [&](const std::string& id) {
+    for (const auto& agent : agents) {
+      if (jstr(agent, "id") == id) return agent;
+    }
+    return json::object();
+  };
+
+  json members = jval(channel, "memberAgentIds", json::array());
+  auto idOf = [](const json& value) {
+    return value.is_string() ? value.get<std::string>() : std::string();
+  };
+  std::string first;
+  for (const auto& id : mentions) {
+    const std::string candidate = idOf(id);
+    if (!candidate.empty() && !jstr(infoOf(candidate), "id").empty()) {
+      first = candidate;
+      break;
+    }
+  }
+  if (first.empty() && !members.empty()) first = idOf(members[0]);
+  std::string second;
+  for (const auto& id : members) {
+    const std::string candidate = idOf(id);
+    if (!candidate.empty() && candidate != first) {
+      second = candidate;
+      break;
+    }
+  }
+  if (second.empty()) second = first;
+
+  const std::string firstName = nameOf(first);
+  const std::string secondName = nameOf(second);
+  json pending = jval(demoTeam_, "pending", json::array());
+  pending.push_back({{"dueAt", now + 600},
+                     {"channelId", channelId},
+                     {"message", json{{"id", "demo-reply-1-" + std::to_string(now)},
+                                      {"at", now + 600},
+                                      {"from", "agent"},
+                                      {"agentId", first},
+                                      {"text", "收到，我先看接口契约。\n\n- 入参用 `traceId` 串起来\n- 安全边界交给 @" + secondName + " 先出 stub"}}}});
+  pending.push_back({{"dueAt", now + 1100},
+                     {"channelId", channelId},
+                     {"message", json{{"id", "demo-reply-sys-" + std::to_string(now)},
+                                      {"at", now + 1100},
+                                      {"from", "system"},
+                                      {"kind", "system"},
+                                      {"text", firstName + " 把这一棒交给 " + secondName},
+                                      {"systemEvent", {{"type", "room-handoff"},
+                                                       {"reason", "handoff"},
+                                                       {"names", json::array({firstName, secondName})}}}}}});
+  pending.push_back({{"dueAt", now + 1700},
+                     {"channelId", channelId},
+                     {"message", json{{"id", "demo-reply-2-" + std::to_string(now)},
+                                      {"at", now + 1700},
+                                      {"from", "agent"},
+                                      {"agentId", second},
+                                      {"text", "stub 已放到 `api/stub/openapi.yaml`，15 分钟后给初版。"}}}});
+  {
+    std::lock_guard<std::mutex> lk(teamMu_);
+    demoTeam_["pending"] = pending;
+    // 注意必须直接改 demoTeam_ 里的数组；jval() 返回的是副本，改副本不会落回 fixture
+    for (auto& item : demoTeam_["channels"]) {
+      if (jstr(item, "id") != channelId) continue;
+      item["lastPreview"] = utf8Truncate(text, 240);
+      item["lastActiveAt"] = now;
+    }
+  }
+  return message;
+}
+
+void Backend::handleTeamState(const httplib::Request&, httplib::Response& res) {
+  json out = demo_ ? demoTeamState() : teamStateFromCli();
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
+void Backend::handleTeamMessages(const httplib::Request& req, httplib::Response& res) {
+  const std::string channelId = req.get_param_value("channelId");
+  if (!teamIdOk(channelId)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "缺少合法的 channelId"}}), "application/json; charset=utf-8");
+    return;
+  }
+  if (demo_) {
+    json page = demoTeamMessages(channelId);
+    json list = json::array();
+    for (const auto& message : jval(page, "messages", json::array())) list.push_back(trimTeamMessage(message));
+    res.set_content(dumpJson(json{{"messages", list}, {"hasMore", false}, {"before", ""}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  const std::string before = req.get_param_value("before");
+  json pageResp;
+  json page = teamPageFromCli(channelId, before, "", pageResp);
+  if (pageResp.value("status", 0) != 200) {
+    json doc = jval(pageResp, "doc", json::object());
+    res.status = 502;
+    res.set_content(dumpJson(json{{"error", teamErrorText(doc)}}), "application/json; charset=utf-8");
+    return;
+  }
+
+  json list = json::array();
+  for (const auto& message : jval(page, "messages", json::array())) list.push_back(trimTeamMessage(message));
+  // 打开频道（无 before）时把增量游标对齐到最新一条；否则长轮询会把历史再推一遍
+  if (before.empty()) teamSeedCursor(channelId, jstr(page, "after"), true);
+
+  json out = {{"messages", list},
+              {"hasMore", jval(page, "hasMore", false)},
+              {"before", jstr(page, "before")}};
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
+void Backend::handleTeamSend(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string channelId = jstr(body, "channelId");
+  const std::string text = jstr(body, "text");
+  if (!teamIdOk(channelId) || text.empty()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少 channelId 或 text"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  json mentions = jval(body, "mentionAgentIds", json::array());
+  if (!mentions.is_array()) mentions = json::array();
+  json clean = json::array();
+  for (const auto& id : mentions) {
+    if (id.is_string() && teamIdOk(id.get<std::string>())) clean.push_back(id);
+  }
+
+  if (demo_) {
+    json message = demoTeamSend(channelId, text, clean);
+    res.set_content(dumpJson(json{{"ok", true}, {"message", trimTeamMessage(message)}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  // 实测写操作无幂等键：超时按「已发送、回复稍后到」处理，绝不重试（会重复发消息）
+  json resp = agentSend("POST", "/api/v1/agent-home/channels/" + channelId + "/messages",
+                        json{{"text", text}, {"mentionAgentIds", clean}}, 15);
+  const int status = resp.value("status", 0);
+  const int64_t now = nowMs();
+  if (status == 0) {
+    // 只有「读超时」才按已发送处理；连接失败说明消息大概率没出去，让前端保留文字
+    if (!resp.value("timeout", false)) {
+      res.status = 400;
+      res.set_content(dumpJson(json{{"ok", false},
+                                    {"error", jstr(resp, "error", "连不上频道服务")}}),
+                      "application/json; charset=utf-8");
+      return;
+    }
+    json local = teamLocalMessage(text, clean, "local-" + std::to_string(now));
+    res.set_content(dumpJson(json{{"ok", true},
+                                  {"pending", true},
+                                  {"message", local},
+                                  {"warning", "发送响应超时，消息可能已送达；本轮回复稍后到"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  json doc = jval(resp, "doc", json::object());
+  if (status != 200) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", teamErrorText(doc)}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  json data = jval(doc, "data", json::object());
+  json message = jval(data, "message", json::object());
+  if (!message.is_object() || jstr(message, "id").empty()) message = jval(doc, "message", json::object());
+  if (!message.is_object() || jstr(message, "id").empty()) {
+    message = teamLocalMessage(text, clean, "local-" + std::to_string(now));
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"message", trimTeamMessage(message)}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleTeamEvents(const httplib::Request& req, httplib::Response& res) {
+  const std::string channelId = req.get_param_value("channelId");
+  if (!teamIdOk(channelId)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"events", json::array()}, {"lastSeq", 0}, {"error", "缺少合法的 channelId"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  int64_t from = 0;
+  int waitMs = 15000;
+  try {
+    if (req.has_param("from")) from = std::stoll(req.get_param_value("from"));
+    if (req.has_param("wait")) waitMs = std::stoi(req.get_param_value("wait"));
+  } catch (...) {
+  }
+  if (waitMs < 0) waitMs = 0;
+  if (waitMs > 25000) waitMs = 25000;
+  const int64_t deadline = nowMs() + waitMs;
+
+  if (!demo_ && (!host_ || !host_->ready())) {
+    res.set_content(dumpJson(json{{"events", json::array()},
+                                  {"lastSeq", from},
+                                  {"error", "CLI 未就绪，频道更新已暂停"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  // 真实模式：若无游标，先对齐到最新一页（前端总是先拉 messages，这里只兜底）
+  if (!demo_) {
+    bool inited = false;
+    {
+      std::lock_guard<std::mutex> lk(teamMu_);
+      inited = teamWatches_[channelId].inited;
+    }
+    if (!inited) {
+      json pageResp;
+      json page = teamPageFromCli(channelId, "", "", pageResp);
+      if (pageResp.value("status", 0) == 200) teamSeedCursor(channelId, jstr(page, "after"), true);
+    }
+    // 游标没对齐就不要进长轮询：立刻返回错误让前端退避，避免 700ms 空转
+    {
+      std::lock_guard<std::mutex> lk(teamMu_);
+      inited = teamWatches_[channelId].inited;
+    }
+    if (!inited) {
+      res.set_content(dumpJson(json{{"events", json::array()},
+                                    {"lastSeq", from},
+                                    {"error", "频道游标未就绪，请重新打开频道"}}),
+                      "application/json; charset=utf-8");
+      return;
+    }
+  }
+
+  json events = json::array();
+  int64_t lastSeq = from;
+  std::string error;
+  bool first = true;
+  while (true) {
+    if (demo_) demoTeamFlush();
+    {
+      std::lock_guard<std::mutex> lk(teamMu_);
+      auto& watch = teamWatches_[channelId];
+      for (const auto& event : watch.queue) {
+        if (jval(event, "seq", 0).get<int64_t>() > from) {
+          // 显式标成 channel 事件、sessionId 留空：即使以后混进 /api/events，
+          // 也不会被前端当成 ACP 会话事件（chat.ts 会丢弃 sessionId 不匹配的事件）
+          json item = event;
+          item["type"] = "channel";
+          item["sessionId"] = "";
+          events.push_back(item);
+        }
+      }
+      lastSeq = watch.seq;
+    }
+    if (!events.empty()) break;
+    if (nowMs() >= deadline) break;
+
+    if (!demo_ && !first) {
+      std::string after;
+      bool inited = false;
+      {
+        std::lock_guard<std::mutex> lk(teamMu_);
+        inited = teamWatches_[channelId].inited;
+        after = teamWatches_[channelId].after;
+      }
+      // 没对齐游标时不要拉页：否则每次轮询都会把整页历史当增量推一遍
+      if (!inited) break;
+      json pageResp;
+      json page = teamPageFromCli(channelId, "", after, pageResp);
+      if (pageResp.value("status", 0) != 200) {
+        error = teamErrorText(jval(pageResp, "doc", json::object()));
+        break;
+      }
+      json fresh = jval(page, "messages", json::array());
+      {
+        std::lock_guard<std::mutex> lk(teamMu_);
+        auto& watch = teamWatches_[channelId];
+        for (const auto& message : fresh) {
+          const std::string id = jstr(message, "id");
+          bool seen = false;
+          for (const auto& queued : watch.queue) {
+            if (jstr(jval(queued, "message", json::object()), "id") == id) {
+              seen = true;
+              break;
+            }
+          }
+          if (seen) continue;
+          watch.seq += 1;
+          watch.queue.push_back({{"seq", watch.seq}, {"channelId", channelId}, {"message", message}});
+        }
+        watch.after = jstr(page, "after", watch.after);
+        // 队列只保留最近 200 条，避免一次打开长频道把内存吃满
+        while (watch.queue.size() > 200) watch.queue.pop_front();
+      }
+    }
+    first = false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  }
+
+  json out = {{"events", events}, {"lastSeq", lastSeq}};
+  if (!error.empty()) out["error"] = error;
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
+void Backend::handleTeamMember(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string channelId = jstr(body, "channelId");
+  const std::string agentId = jstr(body, "agentId");
+  const bool muted = body.value("muted", false);
+  if (!teamIdOk(channelId) || !teamIdOk(agentId)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少合法的 channelId / agentId"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  if (demo_) {
+    json channel = json::object();
+    {
+      std::lock_guard<std::mutex> lk(teamMu_);
+      for (auto& item : demoTeam_["channels"]) {
+        if (jstr(item, "id") != channelId) continue;
+        json next = json::array();
+        bool found = false;
+        for (const auto& id : jval(item, "mutedAgentIds", json::array())) {
+          const bool same = id.is_string() && id.get<std::string>() == agentId;
+          if (same) {
+            found = true;
+            if (muted) next.push_back(id);
+          } else {
+            next.push_back(id);
+          }
+        }
+        if (!found && muted) next.push_back(agentId);
+        item["mutedAgentIds"] = next;
+        channel = trimTeamChannel(item);
+      }
+    }
+    if (channel.empty()) {
+      res.status = 404;
+      res.set_content(dumpJson(json{{"ok", false}, {"error", "频道不存在"}}), "application/json; charset=utf-8");
+      return;
+    }
+    res.set_content(dumpJson(json{{"ok", true}, {"channel", channel}}), "application/json; charset=utf-8");
+    return;
+  }
+
+  // CLI 没有单独静音接口：PATCH 频道时带完整 mutedAgentIds 列表
+  json state = teamStateFromCli();
+  if (!state.value("enabled", false)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false},
+                                  {"error", jstr(state, "reason", "CLI 未就绪，暂时不能修改静音")}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  json target = json::object();
+  for (const auto& channel : jval(state, "channels", json::array())) {
+    if (jstr(channel, "id") == channelId) target = channel;
+  }
+  if (target.empty()) {
+    res.status = 404;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "频道不存在"}}), "application/json; charset=utf-8");
+    return;
+  }
+  json next = json::array();
+  bool found = false;
+  for (const auto& id : jval(target, "mutedAgentIds", json::array())) {
+    const bool same = id.is_string() && id.get<std::string>() == agentId;
+    if (same) {
+      found = true;
+      if (muted) next.push_back(id);
+    } else {
+      next.push_back(id);
+    }
+  }
+  if (!found && muted) next.push_back(agentId);
+
+  json resp = agentSend("PATCH", "/api/v1/agent-home/channels/" + channelId,
+                        json{{"mutedAgentIds", next}}, 10);
+  json doc = jval(resp, "doc", json::object());
+  if (resp.value("status", 0) != 200) {
+    const int code = resp.value("status", 0);
+    const std::string error = code == 0 ? jstr(resp, "error", "连不上频道服务") : teamErrorText(doc);
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", error}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  json data = jval(doc, "data", json::object());
+  json channel = jval(data, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) channel = jval(doc, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) {
+    json merged = target;
+    merged["mutedAgentIds"] = next;
+    channel = merged;
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"channel", trimTeamChannel(channel)}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleTeamRestart(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string agentId = jstr(body, "agentId");
+  if (!teamIdOk(agentId)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少合法的 agentId"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  if (demo_) {
+    res.set_content(dumpJson(json{{"ok", true}}), "application/json; charset=utf-8");
+    return;
+  }
+  json resp = agentSend("POST", "/api/v1/agent-home/agents/" + agentId + "/restart", json(), 20);
+  json doc = jval(resp, "doc", json::object());
+  if (resp.value("status", 0) != 200) {
+    const int code = resp.value("status", 0);
+    const std::string error = code == 0 ? jstr(resp, "error", "连不上频道服务") : teamErrorText(doc);
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", error}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  res.set_content(dumpJson(json{{"ok", true}}), "application/json; charset=utf-8");
 }
 
 // /api/v1/stats 会扫全部历史会话，实测 0.9–1.2s；前端每轮对话要读好几次用量。
@@ -4114,6 +4946,13 @@ void Backend::setupRoutes() {
   srv_.Post("/api/permission", [this](const auto& r, auto& s) { handlePermission(r, s); });
   srv_.Post("/api/cancel", [this](const auto& r, auto& s) { handleCancel(r, s); });
   srv_.Get("/api/events", [this](const auto& r, auto& s) { handleStream(r, s); });
+  // 群聊 bot：全部是毫秒级 HTTP 代理，不走 job；events 是长轮询，只回增量消息
+  srv_.Get("/api/team/state", [this](const auto& r, auto& s) { handleTeamState(r, s); });
+  srv_.Get("/api/team/messages", [this](const auto& r, auto& s) { handleTeamMessages(r, s); });
+  srv_.Post("/api/team/send", [this](const auto& r, auto& s) { handleTeamSend(r, s); });
+  srv_.Get("/api/team/events", [this](const auto& r, auto& s) { handleTeamEvents(r, s); });
+  srv_.Post("/api/team/member", [this](const auto& r, auto& s) { handleTeamMember(r, s); });
+  srv_.Post("/api/team/member/restart", [this](const auto& r, auto& s) { handleTeamRestart(r, s); });
   srv_.Get("/api/catalog", [this](const auto& r, auto& s) { handleCatalog(r, s); });
   srv_.Get("/api/market/overview", [this](const auto& r, auto& s) { handleMarketOverview(r, s); });
   srv_.Post("/api/market/parse", [this](const auto& r, auto& s) { handleMarketParse(r, s); });

@@ -141,6 +141,38 @@ export const api = {
     }),
   events: (from: number, wait = 10000) =>
     request<{ events: AcpEvent[]; lastSeq: number }>(`/api/events?from=${from}&wait=${wait}`),
+  teamState: () =>
+    request<{
+      enabled: boolean
+      orchestrationEnabled?: boolean
+      channelMaxMembers?: number
+      defaultAgentId?: string
+      agents: unknown[]
+      channels: unknown[]
+      presence?: { agentId: string; availability: string }[]
+      reason?: string
+      retry?: boolean
+    }>('/api/team/state'),
+  teamMessages: (channelId: string, before = '') =>
+    request<{ messages: unknown[]; hasMore: boolean; before: string }>(
+      `/api/team/messages?channelId=${encodeURIComponent(channelId)}${
+        before ? `&before=${encodeURIComponent(before)}` : ''
+      }`,
+    ),
+  teamSend: (payload: { channelId: string; text: string; mentionAgentIds: string[] }) =>
+    post<{ ok: boolean; message?: unknown; warning?: string; error?: string }>('/api/team/send', payload),
+  teamEvents: (channelId: string, from: number, wait = 15000) =>
+    request<{
+      events: { seq: number; channelId: string; message: unknown }[]
+      lastSeq: number
+      error?: string
+    }>(
+      `/api/team/events?channelId=${encodeURIComponent(channelId)}&from=${from}&wait=${wait}`,
+    ),
+  teamMember: (payload: { channelId: string; agentId: string; muted: boolean }) =>
+    post<{ ok: boolean; channel?: unknown; error?: string }>('/api/team/member', payload),
+  teamRestart: (agentId: string) =>
+    post<{ ok: boolean; error?: string }>('/api/team/member/restart', { agentId }),
   log: (message: string) => {
     void fetch('/api/log', { method: 'POST', body: message, keepalive: true }).catch(() => undefined)
   },

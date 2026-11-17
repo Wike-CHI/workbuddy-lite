@@ -18,6 +18,7 @@ import * as React from 'react'
 
 import { Input } from '@/components/ui/input'
 import { ProjectAiDialog } from '@/components/ProjectAiDialog'
+import { TeamSection } from '@/components/team/TeamSection'
 import { agentRuns } from '@/components/workbench/TasksPanel'
 import { confirmToast } from '@/lib/confirmToast'
 import { leafOf, relTime } from '@/lib/format'
@@ -25,6 +26,7 @@ import type { SessionSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
 import { useIntelligentUiStore } from '@/store/intelligentUi'
+import { useTeamStore } from '@/store/team'
 import { useUiStore } from '@/store/ui'
 import { useWorkbenchStore } from '@/store/workbench'
 
@@ -87,6 +89,7 @@ export function Sidebar() {
   const setMarketOpen = useUiStore((s) => s.setMarketOpen)
   const setWorkspaceOpen = useUiStore((s) => s.setWorkspaceOpen)
   const setIntelligentUiOpen = useIntelligentUiStore((s) => s.setLibraryOpen)
+  const closeChannel = useTeamStore((s) => s.closeChannel)
 
   const [aiOpen, setAiOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
@@ -158,6 +161,7 @@ export function Sidebar() {
       const key = event.key.toLowerCase()
       if (key === 'n') {
         event.preventDefault()
+        closeChannel()
         newSession()
       } else if (key === 'k') {
         event.preventDefault()
@@ -166,7 +170,7 @@ export function Sidebar() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newSession])
+  }, [newSession, closeChannel])
 
   const toggleOther = (key: string) => {
     setExpandedOthers((prev) => {
@@ -178,6 +182,7 @@ export function Sidebar() {
   }
 
   const openSession = async (session: SessionSummary) => {
+    closeChannel()
     if (session.cwd && pathKey(session.cwd) !== currentKey) {
       await switchWorkspace(session.cwd)
     }
@@ -185,6 +190,7 @@ export function Sidebar() {
   }
 
   const newSessionIn = async (path: string) => {
+    closeChannel()
     if (path && pathKey(path) !== currentKey) await switchWorkspace(path)
     newSession()
   }
@@ -379,7 +385,10 @@ export function Sidebar() {
       <button
         id="new-session"
         type="button"
-        onClick={newSession}
+        onClick={() => {
+          closeChannel()
+          newSession()
+        }}
         className="mt-2 flex h-8 w-full items-center justify-between rounded-md px-2 text-[12.5px] text-ink-2 transition-colors hover:bg-surface-3/70 hover:text-ink"
       >
         <span className="flex items-center gap-1.5">
@@ -427,6 +436,8 @@ export function Sidebar() {
       </div>
 
       <div className="mt-2 flex-1 overflow-y-auto pb-2">
+        <TeamSection />
+        <div className="mx-1 my-1.5 border-t border-border/70" />
         {buckets.map((bucket) => (
           <div key={bucket.label} className="mb-1">
             <div className="px-2 py-1.5 text-[10.5px] font-medium text-ink-4">{bucket.label}</div>

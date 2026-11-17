@@ -76,6 +76,10 @@ class Backend {
   bool spawnWindow(const std::string& path);
   std::string pickFolder();
   json agentGet(const std::string& path);
+  // 与 agentGet 同源同 header，但不解包 data：返回 {status, doc, error?}，由上层裁剪。
+  // method 只支持 GET/POST/PATCH；timeoutSec 是读超时（写操作 15s，避免落消息后长时间挂住）。
+  json agentSend(const std::string& method, const std::string& path, const json& body,
+                 int timeoutSec = 10);
   // agent 的 stats / recents 很慢（0.5–1.2s），缓存 + 后台刷新，别卡住 HTTP 线程
   json cliStats();
   json agentRecents();
@@ -91,6 +95,27 @@ class Backend {
   void startMarketParseJob(const std::string& url, const std::string& name, const std::string& jobId);
   json runMarketParse(const std::string& url, std::string name, int& status);
   json findMarketJob(const std::string& id);
+
+  // 群聊（agent-home 频道）：只做 CLI 的第四个客户端，不另存消息库。
+  // state/messages 都必须裁字段；events 只回增量消息，避免把 995KB/4s 的 SSE 快照转给 WebView。
+  json trimTeamAgent(const json& agent);
+  json trimTeamChannel(const json& channel);
+  json trimTeamMessage(const json& message);
+  json teamStateFromCli();
+  json teamPageFromCli(const std::string& channelId, const std::string& before,
+                       const std::string& after, json& page);
+  void teamSeedCursor(const std::string& channelId, const std::string& after, bool reset);
+  void initDemoTeam();
+  json demoTeamState();
+  json demoTeamMessages(const std::string& channelId);
+  json demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions);
+  void demoTeamFlush();
+  void handleTeamState(const httplib::Request&, httplib::Response&);
+  void handleTeamMessages(const httplib::Request&, httplib::Response&);
+  void handleTeamSend(const httplib::Request&, httplib::Response&);
+  void handleTeamEvents(const httplib::Request&, httplib::Response&);
+  void handleTeamMember(const httplib::Request&, httplib::Response&);
+  void handleTeamRestart(const httplib::Request&, httplib::Response&);
 
   // 多文件夹工作空间：一个名字 + 最多 5 个文件夹，cwd 取第一个
   json findWorkspace(const std::string& id);
@@ -225,6 +250,18 @@ class Backend {
   std::mutex marketMu_;
   json demoMarket_ = json::object();
   std::map<std::string, json> marketJobs_;
+
+  // 频道事件游标：每个频道一条 after 游标 + 增量队列，长轮询从这里取。
+  // demo 的「接力回复」也走同一个队列，按 dueAt 到期投放，避免后台线程。
+  struct TeamWatch {
+    bool inited = false;
+    std::string after;
+    int64_t seq = 0;
+    std::deque<json> queue;
+  };
+  std::mutex teamMu_;
+  std::map<std::string, TeamWatch> teamWatches_;
+  json demoTeam_ = json::object();
 
   std::function<std::string(const std::string&)> browserEval_;
   std::function<void(const std::string&)> browserNavigate_;

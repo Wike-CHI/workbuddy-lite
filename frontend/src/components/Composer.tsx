@@ -2,6 +2,7 @@ import { ComposerPrimitive, useAui } from '@assistant-ui/react'
 import { ArrowUp, Blocks, Brain, ImagePlus, PanelsTopLeft, SlidersHorizontal, Square, X } from 'lucide-react'
 import * as React from 'react'
 
+import { detectPalette, filterItems, paletteStep, type PaletteState } from '@/components/composer/palette'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { modelShort } from '@/lib/format'
@@ -70,29 +71,6 @@ function configValueLabel(option: ConfigOption, value: string, fallback?: string
 const MAX_IMAGES = 4
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
-type PaletteMode = 'skill' | 'connector'
-
-interface PaletteState {
-  mode: PaletteMode
-  query: string
-  start: number
-  end: number
-  index: number
-}
-
-function detectPalette(value: string, cursor: number): PaletteState | null {
-  const before = value.slice(0, cursor)
-  const match = before.match(/(^|[\s\u3000])([/@])([^\s/@]*)$/)
-  if (!match) return null
-  return {
-    mode: match[2] === '/' ? 'skill' : 'connector',
-    query: match[3],
-    start: cursor - match[2].length - match[3].length,
-    end: cursor,
-    index: 0,
-  }
-}
-
 function skillList(skills: CatalogSkill[], commands: AcpCommand[]) {
   const map = new Map<string, { name: string; description?: string; hint?: string; source?: string }>()
   for (const skill of skills) {
@@ -112,18 +90,6 @@ function skillList(skills: CatalogSkill[], commands: AcpCommand[]) {
 
 function connectorList(connectors: Connector[]) {
   return [...connectors].sort((a, b) => a.name.localeCompare(b.name))
-}
-
-function filterItems<T extends { name: string; description?: string }>(items: T[], query: string) {
-  const q = query.trim().toLowerCase()
-  if (!q) return items
-  return items
-    .filter((item) => `${item.name} ${item.description || ''}`.toLowerCase().includes(q))
-    .sort((a, b) => {
-      const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1
-      const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1
-      return ap - bp || a.name.localeCompare(b.name)
-    })
 }
 
 function readImage(file: File): Promise<Attachment | null> {
@@ -304,28 +270,20 @@ export function Composer() {
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return
     if (palette) {
-      if (event.key === 'ArrowDown') {
-        event.preventDefault()
-        setPalette((prev) => (prev ? { ...prev, index: (prev.index + 1) % Math.max(1, paletteItems.length) } : prev))
-        return
-      }
-      if (event.key === 'ArrowUp') {
-        event.preventDefault()
-        setPalette((prev) =>
-          prev
-            ? { ...prev, index: (prev.index - 1 + Math.max(1, paletteItems.length)) % Math.max(1, paletteItems.length) }
-            : prev,
-        )
-        return
-      }
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      const step = paletteStep(event.key, palette.index, paletteItems.length)
+      if (step === 'pick') {
         event.preventDefault()
         pickPalette(palette.index)
         return
       }
-      if (event.key === 'Escape') {
+      if (step === 'close') {
         event.preventDefault()
         setPalette(null)
+        return
+      }
+      if (typeof step === 'number') {
+        event.preventDefault()
+        setPalette((prev) => (prev ? { ...prev, index: step } : prev))
         return
       }
     }

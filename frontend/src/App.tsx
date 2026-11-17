@@ -5,6 +5,7 @@ import { Composer } from '@/components/Composer'
 import { Sidebar } from '@/components/Sidebar'
 import { Topbar } from '@/components/Topbar'
 import { ChatThread } from '@/components/chat/ChatThread'
+import { ChannelView } from '@/components/team/ChannelView'
 import { MarketDialog } from '@/components/dialogs/MarketDialog'
 import { IntelligentUiLibraryDialog } from '@/components/intelligent/IntelligentUiLibraryDialog'
 import { UsageDialog } from '@/components/dialogs/UsageDialog'
@@ -13,6 +14,7 @@ import { RightPanel } from '@/components/workbench/RightPanel'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useChatStore } from '@/store/chat'
+import { useTeamStore } from '@/store/team'
 import { initTheme } from '@/store/theme'
 import { useUiStore } from '@/store/ui'
 import { useIntelligentUiStore } from '@/store/intelligentUi'
@@ -59,11 +61,14 @@ export default function App() {
   const agentError = useChatStore((s) => s.agentError)
   const init = useChatStore((s) => s.init)
   const togglePanel = useWorkbenchStore((s) => s.toggle)
+  const activeChannelId = useTeamStore((s) => s.activeChannelId)
 
   useEffect(() => {
     initTheme()
     void init()
     void useIntelligentUiStore.getState().load()
+    // 团队区独立加载：CLI 没就绪或旧版本时只隐藏团队，不影响会话
+    void useTeamStore.getState().loadState()
   }, [init])
 
   // Ctrl/Cmd + B 开合右栏（和 VS Code / Codex 一致）
@@ -88,6 +93,10 @@ export default function App() {
       openWorkspace: () => useUiStore.getState().setWorkspaceOpen(true),
       openMarket: () => useUiStore.getState().setMarketOpen(true),
       openIuiLibrary: (tab: 'saved' | 'templates' = 'saved') => useIntelligentUiStore.getState().setLibraryOpen(true, tab),
+      openTeam: () => useTeamStore.getState().loadState(),
+      openChannel: (id: string) => useTeamStore.getState().openChannel(id),
+      teamSend: (text: string) => useTeamStore.getState().send(text),
+      mention: (agentId: string) => useTeamStore.getState().requestMentionPanel(agentId),
       openWorkbench: (tab: 'files' | 'diff' | 'plan' | 'todos' | 'git' | 'tasks' | 'browser' = 'files') => {
         const store = useWorkbenchStore.getState()
         store.toggle(true)
@@ -122,8 +131,14 @@ export default function App() {
                 Agent 未就绪：{agentError}
               </div>
             )}
-            <ChatThread />
-            <Composer />
+            {activeChannelId ? (
+              <ChannelView />
+            ) : (
+              <>
+                <ChatThread />
+                <Composer />
+              </>
+            )}
           </main>
           <RightPanel />
         </div>
