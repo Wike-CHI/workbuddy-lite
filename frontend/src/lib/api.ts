@@ -3,6 +3,8 @@ import type {
   Bootstrap,
   Catalog,
   ConfigOption,
+  MarketJob,
+  MarketOverview,
   ModelInfo,
   Quota,
   SessionDetail,
@@ -120,6 +122,13 @@ export const api = {
       { name, parent: parent || '' },
     ),
   catalog: () => request<Catalog>('/api/catalog'),
+  marketOverview: () => request<MarketOverview>('/api/market/overview'),
+  parseMarket: (url: string) => post<{ ok: boolean; job: MarketJob }>('/api/market/parse', { url }),
+  installPlugin: (plugin: string, marketplace: string) =>
+    post<{ ok: boolean; job: MarketJob }>('/api/market/install', { plugin, marketplace }),
+  uninstallPlugin: (plugin: string, marketplace: string) =>
+    post<{ ok: boolean; job: MarketJob }>('/api/market/uninstall', { plugin, marketplace }),
+  marketJob: (id: string) => request<{ ok: boolean; job: MarketJob }>(`/api/market/job?id=${encodeURIComponent(id)}`),
   aiOrganize: () =>
     post<{ ok: boolean; projects: { cwd: string; name: string }[]; sessions: { id: string; title: string }[]; error?: string }>(
       '/api/projects/ai-organize',

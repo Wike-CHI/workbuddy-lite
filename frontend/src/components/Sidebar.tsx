@@ -534,6 +534,7 @@ export function Sidebar() {
             模板
           </button>
           <button
+            id="market-open"
             type="button"
             className="flex h-6 flex-1 items-center justify-center gap-1 rounded text-[10.5px] text-ink-4 transition-colors hover:bg-surface-3/60 hover:text-ink-2"
             onClick={() => setMarketOpen(true)}

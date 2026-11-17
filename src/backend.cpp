@@ -412,6 +412,7 @@ std::string joinPathSafe(const std::string& a, const std::string& b);
 
 struct CmdResult {
   bool ok = false;
+  bool timedOut = false;
   int code = -1;
   std::string out;
 };
@@ -502,6 +503,7 @@ CmdResult runCapture(const std::vector<std::string>& args, const std::string& cw
       CloseHandle(rd);
       CloseHandle(pi.hProcess);
       CloseHandle(pi.hThread);
+      r.timedOut = true;
       return r;
     }
   }
@@ -513,6 +515,68 @@ CmdResult runCapture(const std::vector<std::string>& args, const std::string& cw
   r.code = static_cast<int>(code);
   r.ok = code == 0;
   return r;
+}
+
+// codebuddy 在 Windows 上是 npm 的 .cmd shim，CreateProcess 不能直接启动，必须经 cmd /c
+CmdResult runCli(const std::vector<std::string>& args, const std::string& cwd, int timeoutMs) {
+  std::vector<std::string> full{"cmd.exe", "/d", "/c", "codebuddy"};
+  full.insert(full.end(), args.begin(), args.end());
+  return runCapture(full, cwd, timeoutMs);
+}
+
+std::string tailText(const std::string& s, size_t maxBytes) {
+  std::string t = trimStr(s);
+  if (t.size() <= maxBytes) return t;
+  return "…" + t.substr(t.size() - maxBytes);
+}
+
+// 只允许命令行参数里安全的字符，避免经 cmd.exe 时被 & | 之类的元字符注入
+bool safeMarketToken(const std::string& s) {
+  if (s.empty() || s.size() > 160) return false;
+  for (unsigned char c : s) {
+    if (std::isalnum(c) || c == '.' || c == '_' || c == '-' || c == '@' || c == '/' || c == ':' ||
+        c == '+' || c == '~')
+      continue;
+    return false;
+  }
+  return true;
+}
+
+bool looksLikeMarketSource(const std::string& url) {
+  std::string low = url;
+  for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (low.rfind("http://", 0) == 0 || low.rfind("https://", 0) == 0 ||
+      low.rfind("ssh://", 0) == 0 || low.rfind("git://", 0) == 0 || low.rfind("git@", 0) == 0 ||
+      low.rfind("file://", 0) == 0)
+    return true;
+  // GitHub 的 owner/repo 简写，或本机路径
+  if (low.find('/') != std::string::npos || low.find('\\') != std::string::npos) return true;
+  return false;
+}
+
+std::string marketNameFromUrl(const std::string& raw) {
+  std::string url = trimStr(raw);
+  size_t cut = url.find_first_of("?#");
+  if (cut != std::string::npos) url = url.substr(0, cut);
+  while (!url.empty() && (url.back() == '/' || url.back() == '\\')) url.pop_back();
+  size_t slash = url.find_last_of("/\\");
+  std::string name = slash == std::string::npos ? url : url.substr(slash + 1);
+  for (const char* ext : {".git", ".zip"}) {
+    size_t n = strlen(ext);
+    if (name.size() > n) {
+      std::string tail = name.substr(name.size() - n);
+      for (auto& c : tail) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      if (tail == ext) name = name.substr(0, name.size() - n);
+    }
+  }
+  std::string out;
+  for (unsigned char c : name) {
+    if (std::isalnum(c) || c == '.' || c == '_' || c == '-') out.push_back(static_cast<char>(c));
+    else if (!out.empty() && out.back() != '-') out.push_back('-');
+  }
+  while (!out.empty() && out.back() == '-') out.pop_back();
+  if (out.empty()) out = "market";
+  return out;
 }
 
 bool isGitRepo(const std::string& dir) {
@@ -721,6 +785,7 @@ Backend::Backend(bool demo, std::string cwd, std::string webRoot, bool fresh)
   exePath_ = buf;
 
   initStore();
+  if (demo_) initDemoMarket();
 
   // 没显式传 --cwd 时沿用上次的工作空间；带了 --cwd 时优先把它归到所属工作空间
   if (!cwd_.empty() && !isDirectoryPath(cwd_)) cwd_.clear();
@@ -1799,8 +1864,539 @@ void Backend::handleCatalog(const httplib::Request&, httplib::Response& res) {
   }
 }
 
-void Backend::handleImage(const httplib::Request& req, httplib::Response& res) {
-  std::string name = req.matches.size() > 1 ? req.matches[1].str() : "";
+// ---------------------------------------------------------------- 插件市场
+// 真实安装态只认 CLI 的 installed_plugins.json / known_marketplaces.json；
+// 这里只负责把 CLI 的 marketplace 命令包成带超时的 HTTP 接口。
+
+void Backend::initDemoMarket() {
+  auto plugin = [](const std::string& name, const std::string& market, const std::string& src,
+                   const std::string& desc, const std::string& version, const std::string& category,
+                   bool installed) {
+    std::string key = name + "@" + market;
+    return json{{"name", name},
+                {"marketplace", market},
+                {"description", desc},
+                {"version", version},
+                {"category", category},
+                {"author", "CodeBuddy"},
+                {"installed", installed},
+                {"enabled", installed},
+                {"installVersion", installed ? version : ""},
+                {"installPath", installed ? "~/.codebuddy/plugins/cache/" + market + "/" + name + "/" +
+                                                version
+                                          : ""},
+                {"scope", installed ? "user" : ""},
+                {"source", src},
+                {"key", key}};
+  };
+
+  const std::string official = "https://download.codebuddy.cn/plugin-marketplace/codebuddy-plugins-official.zip";
+  const std::string teams = "https://download.codebuddy.cn/plugin-marketplace/cb_teams_marketplace.zip";
+  const std::string harness = "https://github.com/revfactory/harness";
+
+  json markets = json::array();
+  markets.push_back(json{{"name", "codebuddy-plugins-official"},
+                         {"description", "CodeBuddy 官方插件市场"},
+                         {"type", "zip"},
+                         {"source", official},
+                         {"builtIn", true},
+                         {"lastUpdated", "2026-11-16T01:45:58.547Z"},
+                         {"installLocation", "~/.codebuddy/plugins/marketplaces/codebuddy-plugins-official"}});
+  markets.push_back(json{{"name", "cb_teams_marketplace"},
+                         {"description", "团队协作与文档处理插件集合"},
+                         {"type", "zip"},
+                         {"source", teams},
+                         {"builtIn", true},
+                         {"lastUpdated", "2026-11-17T01:47:15.749Z"},
+                         {"installLocation", "~/.codebuddy/plugins/marketplaces/cb_teams_marketplace"}});
+  markets.push_back(json{{"name", "harness-marketplace"},
+                         {"description", "Marketplace from revfactory/harness"},
+                         {"type", "github"},
+                         {"source", harness},
+                         {"builtIn", false},
+                         {"lastUpdated", "2026-11-16T03:13:28.301Z"},
+                         {"installLocation", "~/.codebuddy/plugins/marketplaces/harness-marketplace"}});
+
+  json plugins = json::array(
+      {plugin("pdf", "codebuddy-plugins-official", official, "PDF 读取、拆分、合并与表单填充", "1.0.0", "文档", true),
+       plugin("docx", "codebuddy-plugins-official", official, "Word 文档生成与排版美化", "0.9.2", "文档", true),
+       plugin("xlsx", "codebuddy-plugins-official", official, "Excel 表格编辑、透视与公式计算", "1.2.0", "文档", true),
+       plugin("agent-browser", "codebuddy-plugins-official", official, "浏览器自动化与网页截图", "1.3.0", "自动化", true),
+       plugin("code-simplifier", "codebuddy-plugins-official", official, "审查并简化改动过的代码，保持行为不变", "0.4.1", "代码质量", false),
+       plugin("context7", "codebuddy-plugins-official", official, "按版本检索第三方库文档并注入上下文", "0.2.0", "文档检索", false),
+       plugin("document-skills", "cb_teams_marketplace", teams, "团队文档协作技能合集（合同、报告、纪要）", "1.0.0", "文档", true),
+       plugin("lark-suite", "cb_teams_marketplace", teams, "飞书表格、审批与日程的团队工具集", "2.4.0", "协作", true),
+       plugin("team-report", "cb_teams_marketplace", teams, "从多维表格汇总周报并导出图表", "0.6.0", "协作", false),
+       plugin("okr-assistant", "cb_teams_marketplace", teams, "对齐季度 OKR 并检查关键结果口径", "0.3.2", "协作", false),
+       plugin("harness", "harness-marketplace", harness, "按项目结构设计专用 Harness 与专家代理", "2.1.0", "工作流", false),
+       plugin("evolve", "harness-marketplace", harness, "根据执行结果迭代已有 Harness", "1.0.3", "工作流", false),
+       plugin("planner", "harness-marketplace", harness, "把大任务拆成可验证的阶段计划", "0.8.0", "工作流", true)});
+
+  std::lock_guard<std::mutex> lk(marketMu_);
+  demoMarket_ = json{{"marketplaces", markets}, {"plugins", plugins}};
+  marketJobs_.clear();
+}
+
+json Backend::marketDemoSnapshot() {
+  std::lock_guard<std::mutex> lk(marketMu_);
+  json markets = jval(demoMarket_, "marketplaces", json::array());
+  json plugins = jval(demoMarket_, "plugins", json::array());
+  for (auto& m : markets) {
+    int instCount = 0;
+    int availCount = 0;
+    for (const auto& p : plugins) {
+      if (jstr(p, "marketplace") != jstr(m, "name")) continue;
+      if (p.value("installed", false)) ++instCount;
+      else ++availCount;
+    }
+    m["pluginCount"] = instCount + availCount;
+    m["installedCount"] = instCount;
+    m["availableCount"] = availCount;
+  }
+  int instTotal = 0;
+  for (const auto& p : plugins)
+    if (p.value("installed", false)) ++instTotal;
+  return json{{"marketplaces", markets},
+              {"plugins", plugins},
+              {"totals", {{"marketplaces", markets.size()},
+                          {"plugins", plugins.size()},
+                          {"installed", instTotal},
+                          {"available", static_cast<int>(plugins.size()) - instTotal}}},
+              {"loadedAt", nowMs()}};
+}
+
+json Backend::marketOverview() {
+  if (demo_) return marketDemoSnapshot();
+  return buildMarketOverview();
+}
+
+json Backend::demoParseMarket(const std::string& url, const std::string& name) {
+  std::lock_guard<std::mutex> lk(marketMu_);
+  json markets = jval(demoMarket_, "marketplaces", json::array());
+  json plugins = jval(demoMarket_, "plugins", json::array());
+  for (const auto& m : markets) {
+    if (jstr(m, "name") != name) continue;
+    json outPlugins = json::array();
+    for (const auto& p : plugins)
+      if (jstr(p, "marketplace") == name) outPlugins.push_back(p);
+    return json{{"ok", true},
+                {"demo", true},
+                {"added", false},
+                {"url", url},
+                {"marketplace", m},
+                {"plugins", outPlugins},
+                {"message", "该市场已在本地，已刷新清单"}};
+  }
+
+  std::string type = "git";
+  std::string low = url;
+  for (auto& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (low.find("github.com") != std::string::npos) type = "github";
+  if (low.size() > 4 && low.substr(low.size() - 4) == ".zip") type = "zip";
+
+  std::string desc = "从 " + url + " 解析的演示市场";
+  json market = {{"name", name},
+                 {"description", desc},
+                 {"type", type},
+                 {"source", url},
+                 {"builtIn", false},
+                 {"pluginCount", 0},
+                 {"installedCount", 0},
+                 {"availableCount", 0},
+                 {"lastUpdated", nowIso()},
+                 {"installLocation", "~/.codebuddy/plugins/marketplaces/" + name}};
+
+  auto mk = [&](const std::string& suffix, const std::string& text, const std::string& version,
+                const std::string& category, bool installed) {
+    std::string pName = name + "-" + suffix;
+    std::string key = pName + "@" + name;
+    return json{{"name", pName},
+                {"marketplace", name},
+                {"description", text},
+                {"version", version},
+                {"category", category},
+                {"author", name},
+                {"installed", installed},
+                {"enabled", installed},
+                {"installVersion", installed ? version : ""},
+                {"installPath", installed ? "~/.codebuddy/plugins/cache/" + name + "/" + pName + "/" + version : ""},
+                {"scope", installed ? "user" : ""},
+                {"source", url},
+                {"key", key}};
+  };
+
+  json fresh = json::array({mk("mcp", "把仓库里的接口定义注册为 MCP 工具，供对话直接调用", "0.3.0", "集成", false),
+                            mk("review", "按仓库约定做提交前代码审查，标出风险与缺失测试", "0.5.1", "代码质量", false),
+                            mk("docs", "从源码注释生成使用文档并同步到仓库 docs 目录", "1.0.2", "文档", true),
+                            mk("release", "根据提交记录生成发布说明与版本号建议", "0.7.0", "工作流", false)});
+
+  markets.push_back(market);
+  for (const auto& p : fresh) plugins.push_back(p);
+  demoMarket_ = json{{"marketplaces", markets}, {"plugins", plugins}};
+
+  for (auto& m : markets) {
+    if (jstr(m, "name") != name) continue;
+    int instCount = 0;
+    int availCount = 0;
+    for (const auto& p : fresh) {
+      if (p.value("installed", false)) ++instCount;
+      else ++availCount;
+    }
+    m["pluginCount"] = instCount + availCount;
+    m["installedCount"] = instCount;
+    m["availableCount"] = availCount;
+    return json{{"ok", true},
+                {"demo", true},
+                {"added", true},
+                {"url", url},
+                {"marketplace", m},
+                {"plugins", fresh},
+                {"message", "已解析 4 个插件（演示数据）"}};
+  }
+  return json{{"ok", false}, {"error", "解析失败"}};
+}
+
+json Backend::demoApplyInstalled(const std::string& key, bool installed, std::string& err) {
+  std::lock_guard<std::mutex> lk(marketMu_);
+  json plugins = jval(demoMarket_, "plugins", json::array());
+  for (auto& p : plugins) {
+    if (jstr(p, "key") != key) continue;
+    p["installed"] = installed;
+    p["enabled"] = installed;
+    if (installed) {
+      p["installVersion"] = jstr(p, "version");
+      p["installPath"] = "~/.codebuddy/plugins/cache/" + jstr(p, "marketplace") + "/" + jstr(p, "name") +
+                         "/" + jstr(p, "version");
+      p["scope"] = "user";
+    } else {
+      p["installVersion"] = "";
+      p["installPath"] = "";
+      p["scope"] = "";
+    }
+    demoMarket_["plugins"] = plugins;
+    return p;
+  }
+  err = "演示数据里找不到插件 " + key;
+  return json();
+}
+
+void Backend::startMarketJob(const std::string& action, const std::string& plugin,
+                             const std::string& marketplace, const std::string& jobId) {
+  const std::string key = plugin + "@" + marketplace;
+  json job = {{"id", jobId},
+              {"action", action},
+              {"plugin", plugin},
+              {"marketplace", marketplace},
+              {"key", key},
+              {"status", "running"},
+              {"startedAt", nowMs()},
+              {"finishedAt", 0},
+              {"output", ""},
+              {"error", ""}};
+  {
+    std::lock_guard<std::mutex> lk(marketMu_);
+    marketJobs_[jobId] = job;
+    while (marketJobs_.size() > 40) marketJobs_.erase(marketJobs_.begin());
+  }
+
+  std::thread([this, action, key, jobId] {
+    json result;
+    std::string err;
+    std::string output;
+    if (demo_) {
+      result = demoApplyInstalled(key, action == "install", err);
+    } else {
+      std::vector<std::string> args{"plugin", action == "install" ? "install" : "uninstall", key,
+                                    "--scope", "user"};
+      if (action != "install") {
+        args.push_back("--keep-data");
+        args.push_back("-y");
+      }
+      CmdResult r = runCli(args, currentCwd(), action == "install" ? 180000 : 60000);
+      output = tailText(r.out, 1200);
+      if (r.timedOut) {
+        err = action == "install"
+                  ? "codebuddy plugin install 超时（180s）。请检查网络或稍后重试。"
+                  : "codebuddy plugin uninstall 超时（60s）。";
+      } else if (!r.ok) {
+        err = output.empty() ? ("codebuddy 退出码 " + std::to_string(r.code) + "，没有输出") : output;
+        if (err.find("未找到") == std::string::npos && err.find("not found") == std::string::npos &&
+            err.find("ENOENT") == std::string::npos) {
+          err = "CLI 执行失败：" + err;
+        }
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(marketMu_);
+      auto it = marketJobs_.find(jobId);
+      if (it == marketJobs_.end()) return;
+      (*it).second["status"] = err.empty() ? "ok" : "error";
+      (*it).second["finishedAt"] = nowMs();
+      (*it).second["error"] = err;
+      (*it).second["output"] = output;
+      if (!result.is_null()) (*it).second["pluginState"] = result;
+    }
+  }).detach();
+}
+
+json Backend::findMarketJob(const std::string& id) {
+  std::lock_guard<std::mutex> lk(marketMu_);
+  auto it = marketJobs_.find(id);
+  return it == marketJobs_.end() ? json() : it->second;
+}
+
+void Backend::handleMarketOverview(const httplib::Request&, httplib::Response& res) {
+  try {
+    json out = marketOverview();
+    out["demo"] = demo_;
+    out["cli"] = "codebuddy";
+    res.set_header("Cache-Control", "no-store");
+    res.set_content(dumpJson(out), "application/json; charset=utf-8");
+  } catch (const std::exception& e) {
+    logf(std::string("market overview 失败: ") + e.what());
+    res.status = 500;
+    res.set_content(dumpJson(json{{"error", std::string("读取插件市场失败：") + e.what()}}),
+                    "application/json; charset=utf-8");
+  }
+}
+
+json Backend::runMarketParse(const std::string& url, std::string name, int& status) {
+  status = 200;
+  const std::string knownPath = homePath() + "\\.codebuddy\\plugins\\known_marketplaces.json";
+  auto norm = [](std::string s) {
+    s = trimStr(s);
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    while (!s.empty() && s.back() == '/') s.pop_back();
+    if (s.size() > 4 && s.substr(s.size() - 4) == ".git") s.resize(s.size() - 4);
+    return s;
+  };
+  auto sameSource = [&](const json& m) {
+    json src = jval(m, "source", json::object());
+    std::string target = norm(url);
+    std::string repo = jstr(src, "repo");
+    std::vector<std::string> cands{jstr(src, "url"), jstr(src, "path"), repo};
+    if (!repo.empty()) cands.push_back("https://github.com/" + repo);
+    for (const auto& c : cands) {
+      if (!c.empty() && norm(c) == target) return true;
+    }
+    return false;
+  };
+
+  json known = readJsonFile(knownPath);
+  std::string actualName;
+  bool existed = false;
+  for (auto it = known.begin(); it != known.end(); ++it) {
+    if (!it.value().is_object()) continue;
+    if (it.key() == name && sameSource(it.value())) {
+      actualName = jstr(it.value(), "manifestName", it.key());
+      existed = true;
+      break;
+    }
+    if (sameSource(it.value())) {
+      actualName = jstr(it.value(), "manifestName", it.key());
+      existed = true;
+      break;
+    }
+  }
+  if (!existed && known.contains(name)) {
+    // 同名但来源不同：加一段短后缀，避免覆盖用户已有的市场
+    size_t h = std::hash<std::string>{}(url) % 0xffff;
+    char suffix[8];
+    snprintf(suffix, sizeof(suffix), "-%04zx", h);
+    name += suffix;
+  }
+
+  CmdResult r;
+  if (existed && !actualName.empty()) {
+    r = runCli({"plugin", "marketplace", "update", actualName}, currentCwd(), 45000);
+  } else {
+    r = runCli({"plugin", "marketplace", "add", url, "--name", name}, currentCwd(), 60000);
+  }
+
+  std::string warning;
+  if (r.timedOut) {
+    if (!existed) {
+      status = 504;
+      return json{{"ok", false}, {"error", "解析市场超时（60s），请检查网络后重试"}};
+    }
+    warning = "更新超时（45s），展示本地缓存清单";
+  } else if (!r.ok) {
+    std::string detail = tailText(r.out, 800);
+    if (!existed) {
+      status = 502;
+      return json{{"ok", false},
+                  {"error", detail.empty() ? "codebuddy plugin marketplace 执行失败，退出码 " +
+                                                 std::to_string(r.code)
+                                           : detail},
+                  {"output", detail}};
+    }
+    warning = "更新失败，展示本地缓存清单" + (detail.empty() ? "" : "：" + detail);
+  } else if (existed) {
+    warning = "市场已存在，已刷新清单";
+  }
+
+  // marketplace add 成功后重新读 CLI 的真实状态，找市场实际名字（可能与 --name 不同）
+  json known2 = readJsonFile(knownPath);
+  std::string resolved = actualName.empty() ? name : actualName;
+  for (auto it = known2.begin(); it != known2.end(); ++it) {
+    if (!it.value().is_object()) continue;
+    if (it.key() == name || jstr(it.value(), "manifestName") == name || sameSource(it.value())) {
+      resolved = jstr(it.value(), "manifestName", it.key());
+      break;
+    }
+  }
+
+  json ov;
+  try {
+    ov = buildMarketOverview();
+  } catch (const std::exception& e) {
+    status = 500;
+    return json{{"ok", false}, {"error", std::string("市场已添加，但读取清单失败：") + e.what()}};
+  }
+  json market = json::object();
+  for (const auto& m : jval(ov, "marketplaces", json::array())) {
+    if (jstr(m, "name") == resolved) {
+      market = m;
+      break;
+    }
+  }
+  if (market.is_null() || market.empty()) {
+    status = 502;
+    return json{{"ok", false},
+                {"error",
+                 "市场已添加，但没有找到 .codebuddy-plugin/marketplace.json。"
+                 "请确认地址指向插件市场仓库，而不是单个插件。"},
+                {"output", tailText(r.out, 500)}};
+  }
+  json list = json::array();
+  for (const auto& p : jval(ov, "plugins", json::array())) {
+    if (jstr(p, "marketplace") == resolved) list.push_back(p);
+  }
+  json out = {{"ok", true},
+              {"demo", false},
+              {"added", !existed},
+              {"url", url},
+              {"marketplace", market},
+              {"plugins", list},
+              {"output", tailText(r.out, 500)}};
+  if (!warning.empty()) out["warning"] = warning;
+  return out;
+}
+
+void Backend::startMarketParseJob(const std::string& url, const std::string& name,
+                                  const std::string& jobId) {
+  json job = {{"id", jobId},
+              {"action", "parse"},
+              {"url", url},
+              {"name", name},
+              {"status", "running"},
+              {"startedAt", nowMs()},
+              {"finishedAt", 0},
+              {"error", ""}};
+  {
+    std::lock_guard<std::mutex> lk(marketMu_);
+    marketJobs_[jobId] = job;
+    while (marketJobs_.size() > 40) marketJobs_.erase(marketJobs_.begin());
+  }
+
+  std::thread([this, url, name, jobId] {
+    int status = 200;
+    json result = demo_ ? demoParseMarket(url, name) : runMarketParse(url, name, status);
+    bool ok = result.value("ok", false);
+    std::string err = ok ? "" : jstr(result, "error", "解析失败");
+    {
+      std::lock_guard<std::mutex> lk(marketMu_);
+      auto it = marketJobs_.find(jobId);
+      if (it == marketJobs_.end()) return;
+      (*it).second["status"] = ok ? "ok" : "error";
+      (*it).second["finishedAt"] = nowMs();
+      (*it).second["error"] = err;
+      (*it).second["result"] = result;
+    }
+  }).detach();
+}
+
+void Backend::handleMarketParse(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string url = trimStr(jstr(body, "url"));
+  if (url.empty()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "请输入插件市场地址"}}), "application/json; charset=utf-8");
+    return;
+  }
+  if (url.size() > 500 || !looksLikeMarketSource(url)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "地址格式不支持：请使用 https://…、GitHub owner/repo 或本地路径"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  std::string name = trimStr(jstr(body, "name"));
+  if (name.empty()) name = marketNameFromUrl(url);
+  if (!safeMarketToken(name) || name.find('@') != std::string::npos) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "无法从地址推导市场名，请用 name 字段显式指定"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  std::string jobId = randomId("mp_");
+  startMarketParseJob(url, name, jobId);
+  res.status = 202;
+  res.set_content(dumpJson(json{{"ok", true}, {"job", findMarketJob(jobId)}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleMarketInstall(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string plugin = trimStr(jstr(body, "plugin"));
+  std::string marketplace = trimStr(jstr(body, "marketplace"));
+  if (plugin.empty() || marketplace.empty() || plugin.find('@') != std::string::npos ||
+      marketplace.find('@') != std::string::npos || !safeMarketToken(plugin) ||
+      !safeMarketToken(marketplace)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "缺少合法的 plugin / marketplace 参数"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  std::string jobId = randomId("mk_");
+  startMarketJob("install", plugin, marketplace, jobId);
+  res.status = 202;
+  res.set_content(dumpJson(json{{"ok", true}, {"job", findMarketJob(jobId)}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleMarketUninstall(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  std::string plugin = trimStr(jstr(body, "plugin"));
+  std::string marketplace = trimStr(jstr(body, "marketplace"));
+  if (plugin.empty() || marketplace.empty() || plugin.find('@') != std::string::npos ||
+      marketplace.find('@') != std::string::npos || !safeMarketToken(plugin) ||
+      !safeMarketToken(marketplace)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "缺少合法的 plugin / marketplace 参数"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  std::string jobId = randomId("mk_");
+  startMarketJob("uninstall", plugin, marketplace, jobId);
+  res.status = 202;
+  res.set_content(dumpJson(json{{"ok", true}, {"job", findMarketJob(jobId)}}),
+                  "application/json; charset=utf-8");
+}
+
+void Backend::handleMarketJob(const httplib::Request& req, httplib::Response& res) {
+  std::string id = req.has_param("id") ? req.get_param_value("id") : "";
+  json job = id.empty() ? json() : findMarketJob(id);
+  res.set_header("Cache-Control", "no-store");
+  if (job.is_null()) {
+    res.status = 404;
+    res.set_content(dumpJson(json{{"error", "任务不存在或已过期"}}), "application/json; charset=utf-8");
+    return;
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"job", job}}), "application/json; charset=utf-8");
+}
+
+void Backend::handleImage(const httplib::Request& req, httplib::Response& res) {  std::string name = req.matches.size() > 1 ? req.matches[1].str() : "";
   if (name.empty() || name.find("..") != std::string::npos ||
       name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
     res.status = 400;
@@ -3519,6 +4115,11 @@ void Backend::setupRoutes() {
   srv_.Post("/api/cancel", [this](const auto& r, auto& s) { handleCancel(r, s); });
   srv_.Get("/api/events", [this](const auto& r, auto& s) { handleStream(r, s); });
   srv_.Get("/api/catalog", [this](const auto& r, auto& s) { handleCatalog(r, s); });
+  srv_.Get("/api/market/overview", [this](const auto& r, auto& s) { handleMarketOverview(r, s); });
+  srv_.Post("/api/market/parse", [this](const auto& r, auto& s) { handleMarketParse(r, s); });
+  srv_.Post("/api/market/install", [this](const auto& r, auto& s) { handleMarketInstall(r, s); });
+  srv_.Post("/api/market/uninstall", [this](const auto& r, auto& s) { handleMarketUninstall(r, s); });
+  srv_.Get("/api/market/job", [this](const auto& r, auto& s) { handleMarketJob(r, s); });
   srv_.Get("/api/models", [this](const auto& r, auto& s) { handleModels(r, s); });
   srv_.Post("/api/model", [this](const auto& r, auto& s) { handleSetModel(r, s); });
   srv_.Post("/api/config", [this](const auto& r, auto& s) { handleConfig(r, s); });

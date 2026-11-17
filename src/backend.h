@@ -80,6 +80,18 @@ class Backend {
   json cliStats();
   json agentRecents();
 
+  // 插件市场：真实状态在 CLI 的 known_marketplaces/installed_plugins 里，这里只读不另建索引
+  json marketOverview();
+  void initDemoMarket();
+  json demoParseMarket(const std::string& url, const std::string& name);
+  json demoApplyInstalled(const std::string& key, bool installed, std::string& err);
+  json marketDemoSnapshot();
+  void startMarketJob(const std::string& action, const std::string& plugin,
+                      const std::string& marketplace, const std::string& jobId);
+  void startMarketParseJob(const std::string& url, const std::string& name, const std::string& jobId);
+  json runMarketParse(const std::string& url, std::string name, int& status);
+  json findMarketJob(const std::string& id);
+
   // 多文件夹工作空间：一个名字 + 最多 5 个文件夹，cwd 取第一个
   json findWorkspace(const std::string& id);
   json workspaceByFolder(const std::string& path);
@@ -110,6 +122,11 @@ class Backend {
   void handleDeleteSession(const httplib::Request&, httplib::Response&);
   void handleRename(const httplib::Request&, httplib::Response&);
   void handleCatalog(const httplib::Request&, httplib::Response&);
+  void handleMarketOverview(const httplib::Request&, httplib::Response&);
+  void handleMarketParse(const httplib::Request&, httplib::Response&);
+  void handleMarketInstall(const httplib::Request&, httplib::Response&);
+  void handleMarketUninstall(const httplib::Request&, httplib::Response&);
+  void handleMarketJob(const httplib::Request&, httplib::Response&);
   void handleImage(const httplib::Request&, httplib::Response&);
   void handleFile(const httplib::Request&, httplib::Response&);
   void handleIuiGet(const httplib::Request&, httplib::Response&);
@@ -203,6 +220,11 @@ class Backend {
   std::mutex gitMu_;
   json gitCache_ = json::object();
   int64_t gitCacheAt_ = 0;
+
+  // 插件市场：CLI 安装/卸载是长任务，放后台线程，HTTP 只回报 job 状态
+  std::mutex marketMu_;
+  json demoMarket_ = json::object();
+  std::map<std::string, json> marketJobs_;
 
   std::function<std::string(const std::string&)> browserEval_;
   std::function<void(const std::string&)> browserNavigate_;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -185,6 +186,32 @@ std::string pluginOf(const std::string& key) {
   return at == std::string::npos ? key : key.substr(0, at);
 }
 
+bool enabledFlag(const json& enabled, const std::string& key) {
+  if (!enabled.is_object()) return false;
+  auto it = enabled.find(key);
+  return it != enabled.end() && it->is_boolean() && it->get<bool>();
+}
+
+// known_marketplaces.json 里的 source 结构随类型变化：zip 用 url/path，github 用 repo
+std::string marketSource(const json& m) {
+  json src = jval(m, "source", json::object());
+  std::string url = jstr(src, "url");
+  if (!url.empty()) return url;
+  std::string path = jstr(src, "path");
+  if (!path.empty()) return path;
+  std::string repo = jstr(src, "repo");
+  if (!repo.empty()) return "https://github.com/" + repo;
+  return "";
+}
+
+json installedEntryOf(const json& installed, const std::string& key) {
+  if (!installed.is_object()) return json();
+  auto it = installed.find(key);
+  if (it == installed.end()) return json();
+  if (it->is_array()) return it->empty() ? json() : it->front();
+  return it->is_object() ? *it : json();
+}
+
 }  // namespace
 
 json listSubdirs(const std::string& dir, int maxItems) {
@@ -296,6 +323,143 @@ json buildCatalog(const std::string& cwd) {
               {"connectors", connectors},
               {"plugins", plugins},
               {"marketplaces", marketplaces},
+              {"codebuddyDir", cbDir},
+              {"loadedAt", nowMs()}};
+}
+
+json buildMarketOverview() {
+  const std::string home = homeDir();
+  const std::string cbDir = joinPath(home, ".codebuddy");
+  json installed = jval(readJson(joinPath(cbDir, "plugins\\installed_plugins.json")), "plugins",
+                        json::object());
+  json enabled = jval(readJson(joinPath(cbDir, "settings.json")), "enabledPlugins", json::object());
+  json marketsDoc = readJson(joinPath(cbDir, "plugins\\known_marketplaces.json"));
+
+  std::vector<json> markets;
+  std::map<std::string, size_t> marketAt;
+  std::vector<json> plugins;
+  std::set<std::string> seen;
+
+  auto ensureMarket = [&](const std::string& name, const std::string& desc) -> size_t {
+    auto it = marketAt.find(name);
+    if (it != marketAt.end()) return it->second;
+    markets.push_back({{"name", name},
+                       {"description", desc},
+                       {"type", ""},
+                       {"source", ""},
+                       {"builtIn", false},
+                       {"pluginCount", 0},
+                       {"installedCount", 0},
+                       {"availableCount", 0},
+                       {"lastUpdated", ""},
+                       {"installLocation", ""}});
+    size_t idx = markets.size() - 1;
+    marketAt[name] = idx;
+    return idx;
+  };
+
+  auto makePlugin = [&](const std::string& pName, const std::string& mName, const std::string& src,
+                        const json& meta, const json& inst) {
+    std::string key = pName + "@" + mName;
+    json rec = {{"name", pName},
+                {"marketplace", mName},
+                {"description", jstr(meta, "description", jstr(meta, "description_en"))},
+                {"version", jstr(meta, "version", jstr(inst, "version"))},
+                {"category", jstr(meta, "category")},
+                {"author", jstr(jval(meta, "author", json::object()), "name")},
+                {"installed", !inst.is_null()},
+                {"enabled", enabledFlag(enabled, key)},
+                {"installVersion", jstr(inst, "version")},
+                {"installPath", jstr(inst, "installPath")},
+                {"scope", jstr(inst, "scope")},
+                {"source", src},
+                {"key", key}};
+    plugins.push_back(rec);
+  };
+
+  if (marketsDoc.is_object()) {
+    for (auto it = marketsDoc.begin(); it != marketsDoc.end(); ++it) {
+      const json& m = it.value();
+      if (!m.is_object()) continue;
+      std::string mName = jstr(m, "manifestName", it.key());
+      std::string loc = jstr(m, "installLocation");
+      json manifest = readJson(joinPath(loc, ".codebuddy-plugin\\marketplace.json"));
+      json list = jval(manifest, "plugins", json::array());
+
+      size_t idx = ensureMarket(mName, jstr(manifest, "description", jstr(m, "description")));
+      markets[idx]["description"] = jstr(manifest, "description", jstr(m, "description"));
+      markets[idx]["type"] = jstr(m, "type", jstr(jval(m, "source", json::object()), "source"));
+      markets[idx]["source"] = marketSource(m);
+      markets[idx]["builtIn"] = m.value("isBuiltIn", false);
+      markets[idx]["lastUpdated"] = jstr(m, "lastUpdated");
+      markets[idx]["installLocation"] = loc;
+      markets[idx]["pluginCount"] = list.is_array() ? list.size() : 0;
+
+      if (!list.is_array()) continue;
+      for (const auto& p : list) {
+        if (!p.is_object()) continue;
+        std::string pName = jstr(p, "name");
+        if (pName.empty()) continue;
+        std::string key = pName + "@" + mName;
+        if (seen.count(key)) continue;
+        seen.insert(key);
+        makePlugin(pName, mName, jstr(markets[idx], "source"), p, installedEntryOf(installed, key));
+      }
+    }
+  }
+
+  // 市场清单里没有、但 installed_plugins.json 里存在的（内置插件、被移除市场残留）
+  if (installed.is_object()) {
+    for (auto it = installed.begin(); it != installed.end(); ++it) {
+      const std::string& key = it.key();
+      if (seen.count(key)) continue;
+      seen.insert(key);
+      std::string mName = marketOf(key);
+      std::string desc = "已安装，但当前市场清单里没有登记";
+      if (mName.empty()) {
+        mName = "local";
+        desc = "本地或内置安装（不属于任何市场）";
+      }
+      ensureMarket(mName, desc);
+      json inst = installedEntryOf(installed, key);
+      makePlugin(pluginOf(key), mName, jstr(markets[marketAt[mName]], "source"), json::object(), inst);
+    }
+  }
+
+  for (auto& m : markets) {
+    int instCount = 0;
+    int availCount = 0;
+    for (const auto& p : plugins) {
+      if (jstr(p, "marketplace") != jstr(m, "name")) continue;
+      if (p.value("installed", false)) ++instCount;
+      else ++availCount;
+    }
+    m["installedCount"] = instCount;
+    m["availableCount"] = availCount;
+    m["pluginCount"] = instCount + availCount;
+  }
+
+  std::sort(markets.begin(), markets.end(), [](const json& a, const json& b) {
+    if (a.value("builtIn", false) != b.value("builtIn", false)) return a.value("builtIn", false);
+    return jstr(a, "name") < jstr(b, "name");
+  });
+  std::sort(plugins.begin(), plugins.end(), [](const json& a, const json& b) {
+    if (a.value("installed", false) != b.value("installed", false)) return a.value("installed", false);
+    std::string am = jstr(a, "marketplace"), bm = jstr(b, "marketplace");
+    if (am != bm) return am < bm;
+    return jstr(a, "name") < jstr(b, "name");
+  });
+
+  int instTotal = 0;
+  for (const auto& p : plugins)
+    if (p.value("installed", false)) ++instTotal;
+
+  return json{{"marketplaces", markets},
+              {"plugins", plugins},
+              {"totals", {{"marketplaces", markets.size()},
+                          {"plugins", plugins.size()},
+                          {"installed", instTotal},
+                          {"available", static_cast<int>(plugins.size()) - instTotal}}},
               {"codebuddyDir", cbDir},
               {"loadedAt", nowMs()}};
 }

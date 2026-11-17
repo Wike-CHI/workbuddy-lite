@@ -7,10 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { PluginMarket } from '@/components/dialogs/PluginMarket'
 import { cn } from '@/lib/utils'
 import { useChatStore } from '@/store/chat'
 import { useUiStore } from '@/store/ui'
-import type { AcpCommand, CatalogPlugin, CatalogSkill } from '@/lib/types'
+import type { AcpCommand, CatalogSkill } from '@/lib/types'
 
 type Tab = 'skills' | 'connectors' | 'plugins'
 
@@ -50,32 +51,23 @@ export function MarketDialog() {
   const commands = useChatStore((s) => s.commands)
   const loadCatalog = useChatStore((s) => s.loadCatalog)
   const addConnector = useChatStore((s) => s.addConnector)
-  const send = useChatStore((s) => s.send)
   const aui = useAui()
   const [tab, setTab] = React.useState<Tab>('skills')
   const [query, setQuery] = React.useState('')
+  const [pluginCount, setPluginCount] = React.useState<number | null>(null)
+  const [marketKey, setMarketKey] = React.useState(0)
 
   const skills = mergeSkills(catalog.skills, commands)
   const connectors = catalog.connectors
-  const plugins = catalog.plugins
 
   const filteredSkills = filterBy(skills, query)
   const filteredConnectors = filterBy(connectors, query)
-  const filteredPlugins = filterBy(
-    plugins.map((p) => ({ ...p, description: `${p.description || ''} ${p.marketplace || ''}` })),
-    query,
-  )
 
   const insertSkill = (name: string) => {
     const current = aui.composer.getState().text
     const prefix = current && !/\s$/.test(current) ? current + ' ' : current
     aui.composer.setText(prefix + '/' + name + ' ')
     setOpen(false)
-  }
-
-  const pluginAction = (cmd: string, key: string) => {
-    setOpen(false)
-    void send(`${cmd} ${key}`)
   }
 
   return (
@@ -90,8 +82,11 @@ export function MarketDialog() {
               <TabsTrigger value="connectors">
                 连接器 <span className="font-mono text-[10px] text-muted-foreground">{connectors.length}</span>
               </TabsTrigger>
-              <TabsTrigger value="plugins">
-                插件市场 <span className="font-mono text-[10px] text-muted-foreground">{plugins.length}</span>
+              <TabsTrigger value="plugins" id="market-tab-plugins">
+                插件市场{' '}
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {pluginCount ?? catalog.plugins.length}
+                </span>
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -111,7 +106,13 @@ export function MarketDialog() {
               size="icon"
               className="size-8"
               title="重新读取本地配置"
-              onClick={() => void loadCatalog()}
+              onClick={() => {
+                void loadCatalog()
+                if (tab === 'plugins') {
+                  setPluginCount(null)
+                  setMarketKey((value) => value + 1)
+                }
+              }}
             >
               <RefreshCw className="size-3.5" />
             </Button>
@@ -181,12 +182,7 @@ export function MarketDialog() {
           )}
 
           {tab === 'plugins' && (
-            <div className="space-y-1.5">
-              {filteredPlugins.map((plugin) => (
-                <PluginRow key={plugin.key} plugin={plugin} onAction={pluginAction} />
-              ))}
-              {!filteredPlugins.length && <Empty text="没有找到插件。" />}
-            </div>
+            <PluginMarket key={marketKey} query={query} onCount={setPluginCount} />
           )}
         </div>
 
@@ -195,7 +191,7 @@ export function MarketDialog() {
           <span>配置目录</span>
           <span className="truncate font-mono">{catalog.codebuddyDir || '—'}</span>
           <span className="flex-1" />
-          <span>安装/启用会以斜杠命令发给 CodeBuddy</span>
+          <span>插件安装/卸载调用 codebuddy CLI，状态直接读 CLI 配置</span>
         </div>
       </DialogContent>
     </Dialog>
@@ -230,51 +226,6 @@ function Row({
       </div>
       <div className="shrink-0">{action}</div>
     </div>
-  )
-}
-
-function PluginRow({
-  plugin,
-  onAction,
-}: {
-  plugin: CatalogPlugin & { description?: string }
-  onAction: (cmd: string, key: string) => void
-}) {
-  const action = !plugin.installed ? (
-    <Button type="button" size="sm" className="h-7 px-2 text-[11px]" onClick={() => onAction('/plugin install', plugin.key)}>
-      安装
-    </Button>
-  ) : !plugin.enabled ? (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      className="h-7 px-2 text-[11px]"
-      onClick={() => onAction('/plugin enable', plugin.key)}
-    >
-      启用
-    </Button>
-  ) : (
-    <Badge variant="success">使用中</Badge>
-  )
-
-  return (
-    <Row
-      icon={<Blocks className="size-3.5" />}
-      title={plugin.name}
-      badges={
-        <>
-          {plugin.installed && <Badge variant="success">已安装</Badge>}
-          {plugin.enabled && <Badge variant="success">已启用</Badge>}
-          {plugin.version && <Badge variant="secondary">v{plugin.version}</Badge>}
-          {plugin.category && <Badge variant="secondary">{plugin.category}</Badge>}
-          {plugin.marketplace && <Badge variant="outline">{plugin.marketplace}</Badge>}
-        </>
-      }
-      description={plugin.description || '（市场里没写描述）'}
-      meta={plugin.key}
-      action={action}
-    />
   )
 }
 

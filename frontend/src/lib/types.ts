@@ -185,6 +185,74 @@ export interface Marketplace {
   installLocation?: string
 }
 
+export interface MarketPlugin {
+  name: string
+  marketplace: string
+  description?: string
+  version?: string
+  category?: string
+  author?: string
+  installed: boolean
+  enabled: boolean
+  installVersion?: string
+  installPath?: string
+  scope?: string
+  source?: string
+  key: string
+}
+
+export interface MarketInfo {
+  name: string
+  description?: string
+  type?: string
+  source?: string
+  builtIn?: boolean
+  pluginCount: number
+  installedCount: number
+  availableCount: number
+  lastUpdated?: string
+  installLocation?: string
+}
+
+export interface MarketOverview {
+  demo?: boolean
+  cli?: string
+  marketplaces: MarketInfo[]
+  plugins: MarketPlugin[]
+  totals: { marketplaces: number; plugins: number; installed: number; available: number }
+  codebuddyDir?: string
+  loadedAt?: number
+}
+
+export interface MarketParseResult {
+  ok: boolean
+  demo?: boolean
+  added: boolean
+  url: string
+  marketplace: MarketInfo
+  plugins: MarketPlugin[]
+  message?: string
+  warning?: string
+  output?: string
+}
+
+export interface MarketJob {
+  id: string
+  action: 'install' | 'uninstall' | 'parse'
+  plugin?: string
+  marketplace?: string
+  key?: string
+  url?: string
+  name?: string
+  status: 'running' | 'ok' | 'error'
+  startedAt: number
+  finishedAt: number
+  output?: string
+  error?: string
+  pluginState?: MarketPlugin
+  result?: MarketParseResult
+}
+
 export interface Catalog {
   skills: CatalogSkill[]
   connectors: Connector[]
