@@ -6,6 +6,7 @@ import { Sidebar } from '@/components/Sidebar'
 import { Topbar } from '@/components/Topbar'
 import { ChatThread } from '@/components/chat/ChatThread'
 import { ChannelView } from '@/components/team/ChannelView'
+import { CreateChannelDialog } from '@/components/team/CreateChannelDialog'
 import { MarketDialog } from '@/components/dialogs/MarketDialog'
 import { IntelligentUiLibraryDialog } from '@/components/intelligent/IntelligentUiLibraryDialog'
 import { UsageDialog } from '@/components/dialogs/UsageDialog'
@@ -62,6 +63,7 @@ export default function App() {
   const init = useChatStore((s) => s.init)
   const togglePanel = useWorkbenchStore((s) => s.toggle)
   const activeChannelId = useTeamStore((s) => s.activeChannelId)
+  const createChannelOpen = useTeamStore((s) => s.createOpen)
 
   useEffect(() => {
     initTheme()
@@ -94,6 +96,7 @@ export default function App() {
       openMarket: () => useUiStore.getState().setMarketOpen(true),
       openIuiLibrary: (tab: 'saved' | 'templates' = 'saved') => useIntelligentUiStore.getState().setLibraryOpen(true, tab),
       openTeam: () => useTeamStore.getState().loadState(),
+      newChannel: () => useTeamStore.getState().openCreate(),
       openChannel: (id: string) => useTeamStore.getState().openChannel(id),
       teamSend: (text: string) => useTeamStore.getState().send(text),
       mention: (agentId: string) => useTeamStore.getState().requestMentionPanel(agentId),
@@ -142,6 +145,7 @@ export default function App() {
           </main>
           <RightPanel />
         </div>
+        {createChannelOpen && <CreateChannelDialog />}
         <UsageDialog />
         <WorkspaceDialog />
         <MarketDialog />

@@ -56,6 +56,7 @@ interface MentionSignal {
 
 interface TeamState {
   enabled: boolean
+  canCreate: boolean
   ready: boolean
   orchestrationEnabled: boolean
   channelMaxMembers: number
@@ -69,6 +70,8 @@ interface TeamState {
   before: string
   lastSeq: number
   sending: boolean
+  creating: boolean
+  createOpen: boolean
   loading: boolean
   loadingMore: boolean
   error: string
@@ -81,6 +84,13 @@ interface TeamState {
   closeChannel: () => void
   loadMore: () => Promise<void>
   send: (text: string) => Promise<{ ok: boolean; error?: string }>
+  createChannel: (input: {
+    name: string
+    memberAgentIds: string[]
+    leadAgentId?: string
+  }) => Promise<{ ok: boolean; error?: string }>
+  openCreate: () => void
+  closeCreate: () => void
   toggleMute: (agentId: string, muted: boolean) => Promise<void>
   restartAgent: (agentId: string) => Promise<void>
   addMention: (agentId: string) => void
@@ -206,6 +216,7 @@ function parseMentionIds(text: string, channel: TeamChannel, agents: TeamAgent[]
 
 export const useTeamStore = create<TeamState>((set, get) => ({
   enabled: false,
+  canCreate: false,
   ready: false,
   orchestrationEnabled: false,
   channelMaxMembers: 12,
@@ -219,6 +230,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   before: '',
   lastSeq: 0,
   sending: false,
+  creating: false,
+  createOpen: false,
   loading: false,
   loadingMore: false,
   error: '',
@@ -240,6 +253,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       set({
         ready: true,
         enabled: !!state.enabled,
+        // 旧后端没有 /api/team/channel；没有 canCreate 时不显示入口，避免点了才 404
+        canCreate: !!state.canCreate,
         orchestrationEnabled: !!state.orchestrationEnabled,
         channelMaxMembers: Number(state.channelMaxMembers || 12),
         defaultAgentId: asString(state.defaultAgentId),
@@ -434,6 +449,43 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   },
+
+  createChannel: async (input) => {
+    const { agents, channels, channelMaxMembers } = get()
+    const name = input.name.trim()
+    if (!name) return { ok: false, error: '请填写频道名' }
+    // CLI 不校验重名；壳里先拦一次，避免侧栏出现两个一模一样的频道
+    if (channels.some((item) => item.name.trim() === name)) {
+      return { ok: false, error: '已有同名频道，换个名字' }
+    }
+    const known = new Set(agents.map((agent) => agent.id))
+    const memberAgentIds = [...new Set(input.memberAgentIds)].filter((id) => known.has(id))
+    if (memberAgentIds.length < 2) return { ok: false, error: '频道至少需要两个智能体' }
+    if (memberAgentIds.length > channelMaxMembers) {
+      return { ok: false, error: `最多 ${channelMaxMembers} 个智能体` }
+    }
+    const leadAgentId =
+      input.leadAgentId && memberAgentIds.includes(input.leadAgentId) ? input.leadAgentId : ''
+
+    set({ creating: true })
+    try {
+      const result = await api.teamCreate({ name, memberAgentIds, leadAgentId })
+      if (!result.ok) throw new Error(result.error || '创建频道失败')
+      const created = cleanChannel(result.channel)
+      if (!created) throw new Error('频道服务没有返回新频道')
+      set({ creating: false, createOpen: false, channels: [...get().channels, created] })
+      if (result.warning) toast.warning(result.warning)
+      toast.success(`已创建「${created.name}」`)
+      await get().openChannel(created.id)
+      return { ok: true }
+    } catch (error) {
+      set({ creating: false })
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  },
+
+  openCreate: () => set({ createOpen: true, creating: false }),
+  closeCreate: () => set({ createOpen: false, creating: false }),
 
   toggleMute: async (agentId, muted) => {
     const { activeChannelId, channels } = get()

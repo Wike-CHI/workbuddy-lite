@@ -236,6 +236,8 @@ web-ui 的客户端基址：`const DI = '/api/v1/agent-home'`，所有请求带 
 
 > 实测静音入口：web-ui 的 `updateChannel` 最终走 `PATCH /channels/{id}`，body 带完整 `mutedAgentIds` 数组；`PATCH /channels/__probe__` 返回 404 `CHANNEL_NOT_FOUND`，证明路由存在。`POST /agents/__probe__/restart` 返回 404 `AGENT_NOT_FOUND`。
 
+> 建频道复核（2026-11-17，源码级）：`gL()` 就是 `POST /channels`，创建弹窗提交 `{memberAgentIds, ...(name.trim()?{name}:{})}`，**body 只有 name 与 memberAgentIds**；组长不在创建请求里，web-ui 是建好后再 `PATCH /channels/{id}` `{leadAgentId}`。`name` 可省略（服务端会生成默认名），壳里强制填名，侧栏才可辨认。`POST /channels` 传非法 JSON 返回 500（JSON 解析错误）而非 404，说明路由存在。
+
 `viewModel`：`{revision, presence:[{agentId, availability}], attention[], activity[], pendingCount, degraded, waiting[]}`。实测 `availability` 出现 `active`；其余枚举未在产物中列出，**实现时未知值一律按空闲处理**（推断：这是「● 正在工作 / ✓ 完成」的来源）。
 
 ### 1.6 证据索引
@@ -315,7 +317,7 @@ web-ui 的客户端基址：`const DI = '/api/v1/agent-home'`，所有请求带 
 2. **频道视图**：头部（名字 / 成员数 / 组长 / 资料）、消息流（成员左气泡、用户右气泡、`@` 芯片、系统事件居中、`正在处理` 实时行）、输入区。
 3. **`@` 选人**：`@` 弹出合并面板，分两组「本频道智能体」与「连接器」，选智能体插入芯片并记 `mentionAgentIds`；`@all` 映射为「所有智能体」。
 4. **发送**：`POST /api/team/send` → 本地立即回显 → SSE 回来后按 id 去重合并。
-5. **成员面板（只读 + 静音）**：看成员角色、谁是组长、在线状态；支持「静音 / 取消静音」「重启成员」两个操作。建/删频道、改组长留到 v1.5。
+5. **成员面板（只读 + 静音）**：看成员角色、谁是组长、在线状态；支持「静音 / 取消静音」「重启成员」两个操作。新建频道见 §10；删频道、改组长留到 v2。
 6. **降级**：CLI 未就绪、频道接口 4xx/5xx、SSE 断流，都要有明确文案，不出现空屏。
 
 ### 3.2 不做（明确留给 v2）
@@ -323,7 +325,7 @@ web-ui 的客户端基址：`const DI = '/api/v1/agent-home'`，所有请求带 
 | 项 | 为什么 |
 |---|---|
 | bot 自主互相聊天（自主唤醒、自动接力开关） | 每次唤醒 = 一次完整 agent run，会持续烧额度；v1 只允许「人工 `@` 才醒」 |
-| 群成员管理（增删成员、设组长、改角色/系统提示词） | 涉及写 `directory.json` 的完整权限链，v1 只读 + 静音 |
+| 群成员管理（增删成员、改角色/系统提示词） | 涉及写 `directory.json` 的完整权限链，v1 只读 + 静音；新建频道见 v1.5/§10，增删成员与改组仍留 v2 |
 | 消息引用 / 编辑 / 撤回 / 固定 | 接口都有，但 UI 成本高，先不做 |
 | 任务板 | 独立一套交互（拖拽、认领、完成），v1 用 `systemEvent` 展示即可 |
 | 附件上传 | 需要 presign/upload 链路，v1 只发文本 |
@@ -652,3 +654,45 @@ timeout 4 curl -s -N -H "X-CodeBuddy-Request: 1" -H "Accept: text/event-stream" 
 - **写操作只验证了「路由存在」**：`PATCH` 静音、`POST` 发送/重启未对真实频道执行，真实时延、`expectedRevision` 冲突与幂等性未知。代码已按「15s 超时视为已发送、不重试」处理。
 - **`presence.availability` 恒为 `active`**：不能从 CLI 读到「谁在跑」；实时行是本地推导，极端情况下（bot 已读但不回复）最多显示 90s。
 - **未读数只本地清零**：不回写 `unreadByUser`，与网页端同时打开时可能各自看到不同的未读数。
+
+---
+
+## 10. v1.5 新建频道（2026-11-17）
+
+### 10.1 范围
+
+侧栏「团队」区底部加「新建频道」；弹窗填名字、多选成员（至少 2 个、上限 `channelMaxMembers`、默认分身不可选）、可选组长；创建成功自动进入该频道。只做「建」，不删、不改已有频道的成员。
+
+### 10.2 接口
+
+| 方法 | 路径 | 入参 | 返回 |
+|---|---|---|---|
+| POST | `/api/team/channel` | `{name, memberAgentIds[], leadAgentId?}` | `{ok, channel, warning?}` / `{ok:false, error}` |
+| ↳ 上游 | `POST /api/v1/agent-home/channels` | `{name, memberAgentIds[]}` | `{data:{channel}}` |
+| ↳ 上游（选组长时） | `PATCH /api/v1/agent-home/channels/{id}` | `{leadAgentId}` | `{data:{channel}}` |
+
+校验在壳里完成：名字非空且 ≤30 字、去重后的成员 ≥2 且 ≤`channelMaxMembers`、组长必须是成员、默认分身直接拒绝。**重名检查只在壳里做**（CLI 允许同名），避免侧栏出现两个一模一样的频道。
+
+`GET /api/team/state` 新增 `canCreate: true`：旧 exe 没有 `/api/team/channel`，前端据此隐藏入口，避免新前端配旧后端时点了才 404。
+
+### 10.3 落地文件
+
+- 后端：`src/backend.cpp` / `src/backend.h`
+  - `handleTeamCreate()`：校验 → 真实模式 `POST /channels`（20s）→ 可选 `PATCH` 设组长（10s）。
+  - 组长失败**不回滚频道**，返回 `warning`，前端用 toast.warning 展示；成功时把 `leadAgentId` 补进返回对象（PATCH 响应可能是部分频道）。
+  - `demoTeamCreateChannel()`：真的往 `demoTeam_` 插一条频道与空消息数组，侧栏与频道视图立即可用。
+- 前端：`frontend/src/components/team/CreateChannelDialog.tsx`（新增）、`TeamSection.tsx`、`store/team.ts`、`lib/api.ts`、`App.tsx`
+  - 弹窗进入时重置状态；提交失败保留已选成员与名字。
+  - 截图钩子：`__wbl.newChannel()`。
+
+### 10.4 验证
+
+- `frontend npm run build` 通过；`bin/workbuddy-lite.verify.exe` 编译通过。
+- demo 截图（`bin/visual/`）：`create-channel-open.png`（3 个成员选中）、`create-channel-one-member.png`（1 个成员、按钮禁用）、`create-channel-duplicate.png`（重名禁用）、`create-channel-dark.png`、`create-channel-created.png`（侧栏出现新频道并自动进入）、`create-channel-lead.png`（组长徽标与头部「组长 安全」）。
+- v1 回归：`v15-team-channel.png`、`v15-team-mention.png`、`v15-team-members.png`；`visual-check.mjs` 三张（`regression-v15/`）+ 插件市场一张。
+
+### 10.5 遗留风险
+
+- **真实建频道尚未联调**：`POST /channels` 只做了「非法 JSON → 500」的路由存在性探针，没有在真实 `agent-home` 上创建过频道（会改用户数据）。真实返回的 `channel` 字段是否完整、重名是否真的被允许，都按「未验证」处理。
+- **设组长是第二次 PATCH**：不是原子操作。若 PATCH 失败，频道已经存在（无组长），用户需要重进频道手动设或删除重建；壳用 warning 提示。
+- 建频道没有幂等键：超时后不重试，避免出现两个同名频道；前端此时会报错并保留弹窗内容，用户可自行重试。

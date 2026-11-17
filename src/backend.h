@@ -109,8 +109,10 @@ class Backend {
   json demoTeamState();
   json demoTeamMessages(const std::string& channelId);
   json demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions);
+  json demoTeamCreateChannel(const std::string& name, const json& members, const std::string& leadId);
   void demoTeamFlush();
   void handleTeamState(const httplib::Request&, httplib::Response&);
+  void handleTeamCreate(const httplib::Request&, httplib::Response&);
   void handleTeamMessages(const httplib::Request&, httplib::Response&);
   void handleTeamSend(const httplib::Request&, httplib::Response&);
   void handleTeamEvents(const httplib::Request&, httplib::Response&);

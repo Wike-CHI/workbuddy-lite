@@ -1,4 +1,4 @@
-import { Users } from 'lucide-react'
+import { Plus, Users } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { agentsOfChannel, useTeamStore } from '@/store/team'
@@ -8,6 +8,7 @@ import { BotAvatar } from './BotAvatar'
 export function TeamSection() {
   const ready = useTeamStore((s) => s.ready)
   const enabled = useTeamStore((s) => s.enabled)
+  const canCreate = useTeamStore((s) => s.canCreate)
   const error = useTeamStore((s) => s.error)
   const channels = useTeamStore((s) => s.channels)
   const agents = useTeamStore((s) => s.agents)
@@ -17,6 +18,7 @@ export function TeamSection() {
   const openChannel = useTeamStore((s) => s.openChannel)
   const closeChannel = useTeamStore((s) => s.closeChannel)
   const loadState = useTeamStore((s) => s.loadState)
+  const openCreate = useTeamStore((s) => s.openCreate)
 
   if (!ready) return null
 
@@ -45,7 +47,7 @@ export function TeamSection() {
         <div className="max-h-[30vh] space-y-px overflow-y-auto pb-1">
           {!channels.length && (
             <div className="px-2 py-2 text-[10.5px] leading-4 text-ink-4">
-              还没有频道，在 CodeBuddy 里创建一个
+              {canCreate ? '还没有频道，点下面「新建频道」组一个' : '还没有频道，在 CodeBuddy 里创建一个'}
             </div>
           )}
           {channels.map((channel) => {
@@ -117,6 +119,18 @@ export function TeamSection() {
             )
           })}
         </div>
+      )}
+
+      {enabled && canCreate && (
+        <button
+          id="team-new-channel"
+          type="button"
+          onClick={openCreate}
+          className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[11.5px] text-ink-3 transition-colors hover:bg-surface-3/60 hover:text-ink-2"
+        >
+          <Plus className="size-3.5 shrink-0" />
+          新建频道
+        </button>
       )}
     </section>
   )

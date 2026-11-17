@@ -1537,6 +1537,7 @@ json Backend::teamStateFromCli() {
 
   json maxMembers = jval(data, "channelMaxMembers");
   return json{{"enabled", data.value("enabled", true)},
+              {"canCreate", true},
               {"orchestrationEnabled", data.value("orchestrationEnabled", false)},
               {"channelMaxMembers", maxMembers.is_number() ? maxMembers : json(12)},
               {"defaultAgentId", defaultAgentId},
@@ -1693,6 +1694,7 @@ json Backend::demoTeamState() {
     presence.push_back({{"agentId", id}, {"availability", id == "demo-agent-sec" ? "offline" : "active"}});
   }
   return json{{"enabled", true},
+              {"canCreate", true},
               {"orchestrationEnabled", false},
               {"channelMaxMembers", 12},
               {"defaultAgentId", "demo-agent-default"},
@@ -1839,9 +1841,125 @@ json Backend::demoTeamSend(const std::string& channelId, const std::string& text
   return message;
 }
 
+json Backend::demoTeamCreateChannel(const std::string& name, const json& members,
+                                   const std::string& leadId) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  const int64_t now = nowMs();
+  const std::string id = "demo-c-" + std::to_string(now);
+  json channel = {{"id", id},
+                  {"name", name},
+                  {"memberAgentIds", members},
+                  {"leadAgentId", leadId},
+                  {"mutedAgentIds", json::array()},
+                  {"lastPreview", ""},
+                  {"lastActiveAt", now},
+                  {"unreadByUser", 0},
+                  {"homeCwd", "d:/work/falcon"}};
+  demoTeam_["channels"].push_back(channel);
+  demoTeam_["messages"][id] = json::array();
+  teamWatches_[id] = TeamWatch{};
+  return channel;
+}
+
 void Backend::handleTeamState(const httplib::Request&, httplib::Response& res) {
   json out = demo_ ? demoTeamState() : teamStateFromCli();
   res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
+// 建频道：CLI 的 POST /channels 只认 {name, memberAgentIds}；组长是建好后单独 PATCH。
+// 所以这里先建、再可选设组长，组长失败不回滚频道，只回 warning。
+void Backend::handleTeamCreate(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+
+  auto trim = [](const std::string& value) {
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(value[begin]))) begin++;
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) end--;
+    return value.substr(begin, end - begin);
+  };
+
+  std::string name = trim(jstr(body, "name"));
+  std::string leadId = jstr(body, "leadAgentId");
+
+  json members = json::array();
+  std::vector<std::string> seen;
+  for (const auto& item : jval(body, "memberAgentIds", json::array())) {
+    if (!item.is_string()) continue;
+    const std::string id = item.get<std::string>();
+    if (!teamIdOk(id)) continue;
+    if (std::find(seen.begin(), seen.end(), id) != seen.end()) continue;
+    seen.push_back(id);
+    members.push_back(id);
+  }
+
+  auto fail = [&](const std::string& message, int status = 400) {
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}),
+                    "application/json; charset=utf-8");
+  };
+
+  if (name.empty()) return fail("请填写频道名");
+  if (utf8Truncate(name, 90) != name) return fail("频道名最多 30 个字");
+
+  // 名册与容量都取自同一份 state，避免建频道时连打三次 CLI
+  json state = demo_ ? demoTeamState() : teamStateFromCli();
+  if (!demo_ && !state.value("enabled", false)) {
+    return fail(jstr(state, "reason", "频道服务不可用，暂时不能建频道"));
+  }
+  const std::string defaultAgentId = jstr(state, "defaultAgentId");
+  // 1:1 分身不能进频道，CLI 建频道时会静默剔除；这里提前拦住，避免「选了 2 个却只剩 1 个」
+  if (!defaultAgentId.empty() && std::find(seen.begin(), seen.end(), defaultAgentId) != seen.end()) {
+    return fail("默认分身不能加入频道，请换一个成员");
+  }
+  if (members.size() < 2) return fail("频道至少需要两个智能体");
+
+  json maxValue = jval(state, "channelMaxMembers");
+  const int maxMembers = maxValue.is_number() ? maxValue.get<int>() : 12;
+  if (static_cast<int>(members.size()) > maxMembers) {
+    return fail("最多 " + std::to_string(maxMembers) + " 个智能体");
+  }
+  if (!leadId.empty() && std::find(seen.begin(), seen.end(), leadId) == seen.end()) {
+    return fail("组长必须是频道成员");
+  }
+
+  if (demo_) {
+    json channel = demoTeamCreateChannel(name, members, leadId);
+    res.set_content(dumpJson(json{{"ok", true}, {"channel", trimTeamChannel(channel)}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  json resp = agentSend("POST", "/api/v1/agent-home/channels",
+                        json{{"name", name}, {"memberAgentIds", members}}, 20);
+  json doc = jval(resp, "doc", json::object());
+  if (resp.value("status", 0) != 200) {
+    const int code = resp.value("status", 0);
+    if (code == 0 && resp.value("timeout", false)) {
+      // 没有幂等键：超时可能已经建好，让用户先确认再重试，避免同一次操作建出两个频道
+      return fail("创建响应超时，频道可能已经建好；请先关闭弹窗看侧栏，确认后再重试");
+    }
+    return fail(code == 0 ? jstr(resp, "error", "连不上频道服务") : teamErrorText(doc));
+  }
+  json data = jval(doc, "data", json::object());
+  json channel = jval(data, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) channel = jval(doc, "channel", json::object());
+  const std::string channelId = jstr(channel, "id");
+  if (channelId.empty()) return fail("频道服务没有返回新频道", 502);
+
+  json out = json{{"ok", true}, {"channel", trimTeamChannel(channel)}};
+  if (!leadId.empty()) {
+    json leadResp = agentSend("PATCH", "/api/v1/agent-home/channels/" + channelId,
+                              json{{"leadAgentId", leadId}}, 10);
+    if (leadResp.value("status", 0) != 200) {
+      out["warning"] = "频道已创建，但设组长失败：" + teamErrorText(jval(leadResp, "doc", json::object()));
+    } else {
+      // PATCH 的响应可能只回部分字段；组长是刚写进去的，直接补上避免侧栏没有「组长」徽标
+      out["channel"]["leadAgentId"] = leadId;
+    }
+  }
   res.set_content(dumpJson(out), "application/json; charset=utf-8");
 }
 
@@ -4948,6 +5066,7 @@ void Backend::setupRoutes() {
   srv_.Get("/api/events", [this](const auto& r, auto& s) { handleStream(r, s); });
   // 群聊 bot：全部是毫秒级 HTTP 代理，不走 job；events 是长轮询，只回增量消息
   srv_.Get("/api/team/state", [this](const auto& r, auto& s) { handleTeamState(r, s); });
+  srv_.Post("/api/team/channel", [this](const auto& r, auto& s) { handleTeamCreate(r, s); });
   srv_.Get("/api/team/messages", [this](const auto& r, auto& s) { handleTeamMessages(r, s); });
   srv_.Post("/api/team/send", [this](const auto& r, auto& s) { handleTeamSend(r, s); });
   srv_.Get("/api/team/events", [this](const auto& r, auto& s) { handleTeamEvents(r, s); });

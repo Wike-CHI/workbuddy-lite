@@ -144,6 +144,7 @@ export const api = {
   teamState: () =>
     request<{
       enabled: boolean
+      canCreate?: boolean
       orchestrationEnabled?: boolean
       channelMaxMembers?: number
       defaultAgentId?: string
@@ -161,6 +162,11 @@ export const api = {
     ),
   teamSend: (payload: { channelId: string; text: string; mentionAgentIds: string[] }) =>
     post<{ ok: boolean; message?: unknown; warning?: string; error?: string }>('/api/team/send', payload),
+  teamCreate: (payload: { name: string; memberAgentIds: string[]; leadAgentId?: string }) =>
+    post<{ ok: boolean; channel?: unknown; warning?: string; error?: string }>(
+      '/api/team/channel',
+      payload,
+    ),
   teamEvents: (channelId: string, from: number, wait = 15000) =>
     request<{
       events: { seq: number; channelId: string; message: unknown }[]
