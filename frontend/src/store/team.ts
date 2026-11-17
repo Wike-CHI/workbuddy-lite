@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { toast } from 'sonner'
 
 import { api } from '@/lib/api'
+import { markUiState } from '@/lib/uiState'
 
 // 群聊数据全部来自本机 CLI 的 agent-home；壳里不建消息库，也不维护 bot 名册。
 // activeChannelId 与 chat.activeId 是两套语义：前者是频道，后者是 ACP 会话。
@@ -309,6 +310,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         item.id === id ? { ...item, unreadByUser: 0 } : item,
       ),
     })
+    markUiState({ activeChannelId: id })
     try {
       const page = await api.teamMessages(id)
       if (get().activeChannelId !== id || token !== pollToken) return
@@ -343,6 +345,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       workingAgentIds: [],
       mentionSignal: null,
     })
+    markUiState({ activeChannelId: '' })
   },
 
   loadMore: async () => {

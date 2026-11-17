@@ -1,9 +1,11 @@
 #include "backend.h"
 
+#include <shellapi.h>
 #include <shobjidl.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -791,6 +793,16 @@ Backend::Backend(bool demo, std::string cwd, std::string webRoot, bool fresh)
   // 没显式传 --cwd 时沿用上次的工作空间；带了 --cwd 时优先把它归到所属工作空间
   if (!cwd_.empty() && !isDirectoryPath(cwd_)) cwd_.clear();
   resolveInitialWorkspace();
+
+  // 模型选择跨进程保留：重启后 bootstrap 就能给出上次用的模型
+  {
+    json settings = readJsonFile(settingsPath());
+    std::string lastModel = jstr(settings, "lastModel");
+    if (!lastModel.empty()) {
+      std::lock_guard<std::mutex> lk(modelMu_);
+      selectedModel_ = lastModel;
+    }
+  }
 }
 
 Backend::~Backend() { stop(); }
@@ -3669,6 +3681,7 @@ void Backend::handleBootstrap(const httplib::Request&, httplib::Response& res) {
               {"workspaceFolders", wsFolders},
               {"fresh", fresh_},
               {"port", port_},
+              {"pid", GetCurrentProcessId()},
               {"agentReady", agentReady_.load()},
               {"agentError", agentError_},
               {"status", statusText()},
@@ -3974,6 +3987,7 @@ void Backend::handleSetModel(const httplib::Request& req, httplib::Response& res
     selectedModel_ = model;
     if (modelCatalog_.is_object()) modelCatalog_["currentId"] = model;
   }
+  saveSetting("lastModel", model);
   bool applied = false;
   std::string error;
   std::string acpSid;
@@ -4410,6 +4424,207 @@ void Backend::setBrowserHooks(std::function<std::string(const std::string&)> eva
   browserState_ = std::move(state);
   browserShot_ = std::move(shot);
   browserImportCookies_ = std::move(importCookies);
+}
+
+void Backend::setExitHook(std::function<void()> hook) {
+  std::lock_guard<std::mutex> lk(exitMu_);
+  exitHook_ = std::move(hook);
+}
+
+namespace {
+
+// 默认取 exe 同级的 workbuddy-lite.next.exe；显式传路径时先按工作目录、再按 exe 目录解析
+std::string resolveNextPath(const std::string& requested) {
+  if (requested.empty()) return exeDir() + "\\workbuddy-lite.next.exe";
+  if (requested.size() > 1 && requested[1] == ':') return requested;
+  if (requested.rfind("\\\\", 0) == 0) return requested;
+  char cwd[MAX_PATH] = {0};
+  GetCurrentDirectoryA(MAX_PATH, cwd);
+  std::string byCwd = std::string(cwd) + "\\" + requested;
+  if (isFilePath(byCwd)) return byCwd;
+  std::string byExe = exeDir() + "\\" + requested;
+  if (isFilePath(byExe)) return byExe;
+  return byCwd;
+}
+
+std::string selfExePath() {
+  wchar_t buf[MAX_PATH] = {0};
+  GetModuleFileNameW(nullptr, buf, MAX_PATH);
+  return wideToUtf8(buf);
+}
+
+std::string uiStatePath() { return localAppDir() + "\\ui-state.json"; }
+
+}  // namespace
+
+void Backend::handleAppUpdate(const httplib::Request&, httplib::Response& res) {
+  const std::string next = resolveNextPath("");
+  const std::string updater = exeDir() + "\\workbuddy-updater.exe";
+  json out = {{"updateReady", isFilePath(next)},
+              {"next", next},
+              {"updater", updater},
+              {"updaterReady", isFilePath(updater)},
+              {"restarting", restarting_.load()},
+              {"target", selfExePath()}};
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
+}
+
+void Backend::handleAppRestart(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (!body.is_object()) body = json::object();
+
+  if (restarting_.exchange(true)) {
+    res.status = 409;
+    res.set_content(dumpJson(json{{"error", "已经在重启流程中"}}), "application/json; charset=utf-8");
+    return;
+  }
+
+  auto fail = [&](int status, const std::string& message) {
+    restarting_ = false;
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}), "application/json; charset=utf-8");
+  };
+
+  // 会话/配置先落盘：sessions.json 里的 lastSessionId、会话 config 与 usage 都已由各自路径写过
+  saveStore();
+
+  const std::string next = resolveNextPath(jstr(body, "next"));
+  if (_stricmp(leafName(next).c_str(), "workbuddy-lite.next.exe") != 0) {
+    fail(400, "next 只接受 workbuddy-lite.next.exe：" + next);
+    return;
+  }
+  if (!isFilePath(next)) {
+    fail(409, "没有可应用的更新：" + next + " 不存在");
+    return;
+  }
+  const std::string updater = exeDir() + "\\workbuddy-updater.exe";
+  if (!isFilePath(updater)) {
+    fail(500, "缺少更新器：" + updater + "，先运行 build-updater.bat");
+    return;
+  }
+
+  // updater 要从 %TEMP% 的副本跑：它所在的 bin 目录马上会被替换
+  wchar_t tempDir[MAX_PATH] = {0};
+  GetTempPathW(MAX_PATH, tempDir);
+  const std::wstring copy = std::wstring(tempDir) + L"workbuddy-updater-" +
+                            std::to_wstring(GetCurrentProcessId()) + L"-" +
+                            std::to_wstring(GetTickCount64()) + L".exe";
+  if (!CopyFileW(utf8ToWide(updater).c_str(), copy.c_str(), FALSE)) {
+    fail(500, "复制更新器到临时目录失败，错误码 " + std::to_string(GetLastError()));
+    return;
+  }
+
+  std::wstring appArgs;
+  {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+      for (int i = 1; i < argc; ++i) {
+        appArgs += L" ";
+        appArgs += quoteArg(argv[i]);
+      }
+      LocalFree(argv);
+    }
+  }
+
+  const std::wstring target = utf8ToWide(selfExePath());
+  std::wstring cmd = quoteArg(copy) + L" --pid " + std::to_wstring(GetCurrentProcessId()) +
+                     L" --next " + quoteArg(utf8ToWide(next)) + L" --target " + quoteArg(target) +
+                     L" --timeout 30 --" + appArgs;
+
+  wchar_t cwd[MAX_PATH] = {0};
+  GetCurrentDirectoryW(MAX_PATH, cwd);
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  if (!CreateProcessW(copy.c_str(), buf.data(), nullptr, nullptr, FALSE,
+                      DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT, nullptr, cwd, &si, &pi)) {
+    fail(500, "启动更新器失败，错误码 " + std::to_string(GetLastError()));
+    return;
+  }
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  logf("自更新：已启动 " + wideToUtf8(copy) + " next=" + next + " target=" + wideToUtf8(target));
+
+  res.status = 202;
+  res.set_content(dumpJson(json{{"ok", true},
+                                {"pid", GetCurrentProcessId()},
+                                {"next", next},
+                                {"updater", wideToUtf8(copy)}}),
+                  "application/json; charset=utf-8");
+
+  // 让 HTTP 响应先发出去，再走正常关窗路径（WebView2 + codebuddy 子进程一起收尾）
+  std::thread([this] {
+    Sleep(600);
+    std::function<void()> hook;
+    {
+      std::lock_guard<std::mutex> lk(exitMu_);
+      hook = exitHook_;
+    }
+    if (hook) {
+      hook();
+    } else {
+      logf("自更新：没有退出钩子，无法自动关闭窗口");
+    }
+  }).detach();
+}
+
+void Backend::handleUiStateGet(const httplib::Request&, httplib::Response& res) {
+  json doc = readJsonFile(uiStatePath());
+  if (!doc.is_object()) doc = json::object();
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(doc), "application/json; charset=utf-8");
+}
+
+void Backend::handleUiStateSet(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (!body.is_object()) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"error", "请求体不是 JSON 对象"}}), "application/json; charset=utf-8");
+    return;
+  }
+
+  json doc = readJsonFile(uiStatePath());
+  if (!doc.is_object()) doc = json::object();
+  for (const char* key : {"activeSessionId", "activeChannelId", "chat", "workbench"}) {
+    if (body.contains(key)) doc[key] = body[key];
+  }
+  doc["updatedAt"] = nowMs();
+
+  const std::string path = uiStatePath();
+  const std::string tmp = path + ".tmp";
+  HANDLE mtx = CreateMutexA(nullptr, FALSE, "Local\\WorkBuddyLiteUiState");
+  if (mtx) WaitForSingleObject(mtx, 5000);
+  bool ok = false;
+  std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+  if (out) {
+    out << dumpJson(doc);
+    out.close();
+    ok = MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+  }
+  if (mtx) {
+    ReleaseMutex(mtx);
+    CloseHandle(mtx);
+  }
+
+  // activeSessionId 同时写回 sessions.json 的 lastSessionId，bootstrap 直接就能用
+  if (body.contains("activeSessionId") && body["activeSessionId"].is_string()) {
+    const std::string sid = body["activeSessionId"].get<std::string>();
+    bool changed = false;
+    {
+      std::lock_guard<std::mutex> lk(storeMu_);
+      if (jstr(store_, "lastSessionId") != sid) {
+        store_["lastSessionId"] = sid;
+        changed = true;
+      }
+    }
+    if (changed) saveStore();
+  }
+
+  res.set_content(dumpJson(json{{"ok", ok}}), "application/json; charset=utf-8");
 }
 
 void Backend::handleBrowserState(const httplib::Request&, httplib::Response& res) {
@@ -5048,6 +5263,10 @@ void Backend::setupRoutes() {
     res.set_content("{\"ok\":true}", "application/json");
   });
   srv_.Get("/api/bootstrap", [this](const auto& r, auto& s) { handleBootstrap(r, s); });
+  srv_.Get("/api/app/update", [this](const auto& r, auto& s) { handleAppUpdate(r, s); });
+  srv_.Post("/api/app/restart", [this](const auto& r, auto& s) { handleAppRestart(r, s); });
+  srv_.Get("/api/app/ui", [this](const auto& r, auto& s) { handleUiStateGet(r, s); });
+  srv_.Post("/api/app/ui", [this](const auto& r, auto& s) { handleUiStateSet(r, s); });
   srv_.Post("/api/sessions", [this](const auto& r, auto& s) { handleSessions(r, s); });
   srv_.Get("/api/sessions", [this](const auto& r, auto& s) { handleBootstrap(r, s); });
   srv_.Get(R"(/api/sessions/([A-Za-z0-9_\-]+))",

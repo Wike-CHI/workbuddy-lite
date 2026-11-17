@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 
 import { api } from '@/lib/api'
 import { applyEvent, eventsToMessages } from '@/lib/messages'
+import { markUiState } from '@/lib/uiState'
 import type {
   AcpCommand,
   AcpEvent,
@@ -79,6 +80,15 @@ function persistPrefs(state: {
   configValues: Record<string, string | boolean>
 }) {
   savePrefs(state.mode, state.model, state.thoughtLevel, state.configValues)
+  // WebView2 的 profile 按 PID 隔离，localStorage 活不过重启；同步一份到后端
+  markUiState({
+    chat: {
+      mode: state.mode,
+      model: state.model,
+      thought: state.thoughtLevel,
+      config: state.configValues,
+    },
+  })
 }
 
 // ACP 的 config_option_update 是全量快照。这里只认未被用户手动改过的项，
@@ -297,11 +307,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           credits: boot.credits,
           charged: boot.charged,
           todayCredits: boot.todayCredits,
-          model: boot.model || get().model,
+          model: get().model || boot.model,
         })
-        if (boot.lastSessionId && !boot.fresh) {
-          await get().loadSession(boot.lastSessionId)
+        const lastId = boot.lastSessionId
+        if (lastId && !boot.fresh && boot.sessions.some((s) => s.id === lastId)) {
+          await get().loadSession(lastId)
         } else {
+          if (lastId && !boot.fresh) toast.info('上次的会话没能恢复，已回到空白会话')
           get().newSession()
         }
         void get().loadModels()
@@ -450,7 +462,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         contextUsed: Number(detail.usage?.used || 0),
         contextSize: Number(detail.usage?.size || 0),
       })
+      markUiState({ activeSessionId: id })
     } catch (error) {
+      // 恢复失败时回到空态，别把界面留在上一个会话上
+      get().newSession()
       toast.error('读取会话失败：' + (error instanceof Error ? error.message : String(error)))
     }
   },
@@ -495,6 +510,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       contextUsed: 0,
       contextSize: 0,
     })
+    markUiState({ activeSessionId: '' })
   },
 
   refreshSessions: async () => {

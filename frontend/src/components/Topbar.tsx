@@ -1,9 +1,10 @@
-import { ChevronDown, Coins, FolderGit2, Moon, PanelRight, Sun } from 'lucide-react'
+import { ChevronDown, Coins, FolderGit2, Moon, PanelRight, RefreshCw, Sun } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { fmtCredits, fmtNum, fmtReset } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useAppUpdateStore } from '@/store/appUpdate'
 import { useChatStore } from '@/store/chat'
 import { useTeamStore } from '@/store/team'
 import { useThemeStore } from '@/store/theme'
@@ -27,6 +28,8 @@ export function Topbar() {
   const togglePanel = useWorkbenchStore((s) => s.toggle)
   const theme = useThemeStore((s) => s.theme)
   const toggleTheme = useThemeStore((s) => s.toggle)
+  const updateReady = useAppUpdateStore((s) => s.ready)
+  const openUpdateConfirm = useAppUpdateStore((s) => s.openConfirm)
 
   const ratio = contextSize > 0 ? Math.min(1, contextUsed / contextSize) : 0
   const circumference = 2 * Math.PI * 6
@@ -103,6 +106,23 @@ export function Topbar() {
           <Coins className="size-3" />
           {fmtCredits(credits)}
         </button>
+        )}
+
+        {updateReady && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                id="app-update-btn"
+                type="button"
+                onClick={openUpdateConfirm}
+                className="flex h-7 items-center gap-1 rounded px-1.5 text-[11px] text-primary transition-colors hover:bg-accent"
+              >
+                <RefreshCw className="size-3.5" />
+                更新
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>重启并应用更新</TooltipContent>
+          </Tooltip>
         )}
 
         <Tooltip>

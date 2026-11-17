@@ -36,6 +36,8 @@ class Backend {
                        std::function<std::string()> state,
                        std::function<std::string(const std::string&)> shot,
                        std::function<std::string()> importCookies);
+  // 自更新时由 main.cpp 注入「关窗口退出」，让 HTTP 线程能触发正常退出路径
+  void setExitHook(std::function<void()> hook);
 
  private:
   void setupRoutes();
@@ -181,6 +183,10 @@ class Backend {
   void handleProjectRename(const httplib::Request&, httplib::Response&);
   void handleProjectApply(const httplib::Request&, httplib::Response&);
   void handleAiOrganize(const httplib::Request&, httplib::Response&);
+  void handleAppUpdate(const httplib::Request&, httplib::Response&);
+  void handleAppRestart(const httplib::Request&, httplib::Response&);
+  void handleUiStateGet(const httplib::Request&, httplib::Response&);
+  void handleUiStateSet(const httplib::Request&, httplib::Response&);
   void handleStatic(const httplib::Request&, httplib::Response&);
 
   bool demo_ = false;
@@ -270,6 +276,10 @@ class Backend {
   std::function<std::string()> browserState_;
   std::function<std::string(const std::string&)> browserShot_;
   std::function<std::string()> browserImportCookies_;
+
+  std::mutex exitMu_;
+  std::function<void()> exitHook_;
+  std::atomic<bool> restarting_{false};
 };
 
 }  // namespace wbl

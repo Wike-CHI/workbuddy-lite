@@ -37,6 +37,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
+call build-updater.bat
+if errorlevel 1 (
+  echo [x] updater build failed
+  exit /b 1
+)
+
 if exist web (
   if exist bin\web rmdir /s /q bin\web
   xcopy /e /i /q web bin\web >nul

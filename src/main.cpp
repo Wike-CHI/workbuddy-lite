@@ -995,6 +995,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
                               1280, 860, nullptr, nullptr, hInst, nullptr);
   if (!hwnd) return 1;
   g_app.hwnd = hwnd;
+  // 自更新：HTTP 线程请求重启时，走正常关窗路径，让 WebView2 和 agent 子进程一起收尾
+  backend.setExitHook([] { PostMessageW(g_app.hwnd, WM_CLOSE, 0, 0); });
   SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(g_app.iconLarge));
   SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(g_app.iconSmall));
   ShowWindow(hwnd, SW_SHOW);

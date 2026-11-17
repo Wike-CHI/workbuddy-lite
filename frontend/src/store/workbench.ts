@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import { api } from '@/lib/api'
+import { markUiState } from '@/lib/uiState'
 import type { GitDiffResult, GitOverview, TreeEntry } from '@/lib/types'
 
 export type WorkbenchTab = 'files' | 'diff' | 'plan' | 'todos' | 'git' | 'tasks' | 'browser'
@@ -34,6 +35,8 @@ function persist(state: Persisted) {
   } catch {
     // ignore
   }
+  // 重启时 WebView2 换了 profile，localStorage 不在了；另外写一份给后端
+  markUiState({ workbench: { open: state.open, width: state.width, tab: state.tab } })
 }
 
 const CODE_LIMIT = 300 * 1024

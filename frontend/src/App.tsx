@@ -1,5 +1,7 @@
 import { AssistantRuntimeProvider, useExternalStoreRuntime, type ThreadMessageLike } from '@assistant-ui/react'
+import { Loader2 } from 'lucide-react'
 import { useEffect } from 'react'
+import { toast } from 'sonner'
 
 import { Composer } from '@/components/Composer'
 import { Sidebar } from '@/components/Sidebar'
@@ -8,12 +10,15 @@ import { ChatThread } from '@/components/chat/ChatThread'
 import { ChannelView } from '@/components/team/ChannelView'
 import { CreateChannelDialog } from '@/components/team/CreateChannelDialog'
 import { MarketDialog } from '@/components/dialogs/MarketDialog'
+import { UpdateDialog } from '@/components/dialogs/UpdateDialog'
 import { IntelligentUiLibraryDialog } from '@/components/intelligent/IntelligentUiLibraryDialog'
 import { UsageDialog } from '@/components/dialogs/UsageDialog'
 import { WorkspaceDialog } from '@/components/dialogs/WorkspaceDialog'
 import { RightPanel } from '@/components/workbench/RightPanel'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { restoreUiState } from '@/store/appState'
+import { useAppUpdateStore } from '@/store/appUpdate'
 import { useChatStore } from '@/store/chat'
 import { useTeamStore } from '@/store/team'
 import { initTheme } from '@/store/theme'
@@ -64,13 +69,35 @@ export default function App() {
   const togglePanel = useWorkbenchStore((s) => s.toggle)
   const activeChannelId = useTeamStore((s) => s.activeChannelId)
   const createChannelOpen = useTeamStore((s) => s.createOpen)
+  const restarting = useAppUpdateStore((s) => s.restarting)
 
   useEffect(() => {
-    initTheme()
-    void init()
-    void useIntelligentUiStore.getState().load()
-    // 团队区独立加载：CLI 没就绪或旧版本时只隐藏团队，不影响会话
-    void useTeamStore.getState().loadState()
+    let cancelled = false
+    void (async () => {
+      // 先恢复上一进程的界面状态，再走 bootstrap；否则 boot.model 会盖掉用户选择
+      const restored = await restoreUiState()
+      if (cancelled) return
+      initTheme()
+      void init()
+      void useIntelligentUiStore.getState().load()
+      // 团队区独立加载：CLI 没就绪或旧版本时只隐藏团队，不影响会话
+      void (async () => {
+        await useTeamStore.getState().loadState()
+        if (cancelled || !restored.activeChannelId) return
+        const team = useTeamStore.getState()
+        if (team.channels.some((item) => item.id === restored.activeChannelId)) {
+          await team.openChannel(restored.activeChannelId)
+        } else {
+          toast.info('上次的频道没有恢复，已回到会话列表')
+        }
+      })()
+    })()
+    void useAppUpdateStore.getState().check()
+    const timer = setInterval(() => void useAppUpdateStore.getState().check(), 5000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
   }, [init])
 
   // Ctrl/Cmd + B 开合右栏（和 VS Code / Codex 一致）
@@ -108,6 +135,10 @@ export default function App() {
       browse: (url: string) => {
         useWorkbenchStore.getState().setBrowserUrl(url)
       },
+      // 自动化用：跳过确认框直接走重启链路（截图/端到端测试）
+      applyUpdate: () => useAppUpdateStore.getState().apply(),
+      checkUpdate: () => useAppUpdateStore.getState().check(),
+      previewRestartOverlay: (on = true) => useAppUpdateStore.getState().preview(on),
     }
   }, [])
 
@@ -150,6 +181,21 @@ export default function App() {
         <WorkspaceDialog />
         <MarketDialog />
         <IntelligentUiLibraryDialog />
+        <UpdateDialog />
+        {restarting && (
+          <div
+            id="app-update-overlay"
+            className="fixed inset-0 z-[120] grid place-items-center bg-background/95 backdrop-blur-sm"
+          >
+            <div className="flex flex-col items-center gap-2.5 text-center">
+              <Loader2 className="size-7 animate-spin text-primary" />
+              <div className="text-sm font-medium text-foreground">正在重启 WorkBuddy Lite…</div>
+              <div className="text-[11px] text-muted-foreground">
+                会话和输入内容已保存，几秒后自动恢复
+              </div>
+            </div>
+          </div>
+        )}
         <Toaster />
       </TooltipProvider>
     </AssistantRuntimeProvider>

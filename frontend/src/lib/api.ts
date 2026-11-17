@@ -42,6 +42,12 @@ function post<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   bootstrap: () => request<Bootstrap>('/api/bootstrap'),
+  appUpdate: () =>
+    request<{ updateReady: boolean; next: string; updaterReady: boolean; restarting: boolean }>(
+      '/api/app/update',
+    ),
+  restartApp: (next?: string) =>
+    post<{ ok: boolean; pid: number; next: string }>('/api/app/restart', next ? { next } : {}),
   sessions: () => request<Bootstrap>('/api/sessions'),
   session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
   renameSession: (id: string, title: string) =>

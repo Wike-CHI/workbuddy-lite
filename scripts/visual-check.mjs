@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 最小可维护的视觉回归：用 fixture 数据跑一次桌面端，抓几张关键状态。
-//   node scripts/visual-check.mjs [--out bin/visual]
+//   node scripts/visual-check.mjs [--out bin/visual] [--exe bin/workbuddy-lite.verify.exe]
 // 依赖：先 npm run build（frontend）与 build.bat，产出 bin/workbuddy-lite.exe。
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -8,12 +8,16 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const exe = path.join(root, 'bin', 'workbuddy-lite.exe')
+const exeIndex = process.argv.indexOf('--exe')
+const exe = path.resolve(
+  root,
+  exeIndex > 0 ? process.argv[exeIndex + 1] : path.join('bin', 'workbuddy-lite.exe'),
+)
 const outIndex = process.argv.indexOf('--out')
 const outDir = path.resolve(root, outIndex > 0 ? process.argv[outIndex + 1] : 'bin/visual')
 
 if (!fs.existsSync(exe)) {
-  console.error('找不到 bin/workbuddy-lite.exe，先跑 build.bat')
+  console.error('找不到 ' + exe + '，先跑 build.bat 或 build-verify.sh')
   process.exit(1)
 }
 

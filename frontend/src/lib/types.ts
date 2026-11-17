@@ -132,6 +132,7 @@ export interface Bootstrap {
   workspaceFolders?: string[]
   fresh: boolean
   port: number
+  pid?: number
   agentReady: boolean
   agentError: string
   status: string
