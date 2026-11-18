@@ -1429,6 +1429,25 @@ std::string teamErrorText(const json& doc) {
   return msg.empty() ? "频道服务返回未知错误" : msg;
 }
 
+// 上游 doc 的 message 是英文；这里把可预见的几种翻成中文，其余原样带回，至少能定位。
+std::string teamWriteErrorText(const json& doc, const std::string& fallback) {
+  json err = jval(doc, "error", json::object());
+  const std::string code = jstr(err, "code");
+  const std::string msg = jstr(err, "message");
+  if (code == "CHANNEL_NOT_FOUND") return "频道不存在或已被删除";
+  if (code == "AGENT_NOT_FOUND") return "智能体不存在或已被删除";
+  if (code == "CHANNEL_REVISION_CONFLICT") return "频道刚被其他窗口修改，请刷新后重试";
+  if (code == "CHANNEL_LIFECYCLE_INVALID") return "频道当前不接受修改（可能已归档）";
+  if (code == "MEMBER_NOT_ALLOWED") return "默认分身不能加入频道，请换一个成员";
+  if (code == "CHANNEL_MEMBERS") return "频道成员数量不合法（至少 2 个，且不超过上限）";
+  if (code == "PERMISSION_MODE_NOT_ALLOWED") return "这个权限模式不被允许";
+  if (msg.find("leadAgentId") != std::string::npos) return "组长必须是频道成员";
+  if (msg.find("existing agent") != std::string::npos) return "成员必须在智能体名册里";
+  if (msg.find("systemPrompt") != std::string::npos) return "系统提示词格式不合法";
+  if (!msg.empty()) return msg;
+  return fallback.empty() ? "频道服务返回未知错误" : fallback;
+}
+
 json teamLocalMessage(const std::string& text, const json& mentions, const std::string& id) {
   json msg = {{"id", id}, {"at", nowMs()}, {"from", "user"}, {"text", text}};
   if (mentions.is_array() && !mentions.empty()) msg["mentionAgentIds"] = mentions;
@@ -1449,6 +1468,17 @@ json Backend::trimTeamAgent(const json& agent) {
   return out;
 }
 
+json Backend::trimTeamAgentDetail(const json& agent) {
+  json out = trimTeamAgent(agent);
+  // 只有详情才带人设正文；服务端上限 2000 字，原样返回，不做截断，否则编辑保存会把后半段吃掉
+  out["description"] = jstr(agent, "description");
+  for (const char* key : {"engine", "visibility", "createdBy"}) {
+    std::string value = jstr(agent, key);
+    if (!value.empty()) out[key] = value;
+  }
+  return out;
+}
+
 json Backend::trimTeamChannel(const json& channel) {
   json out = {{"id", jstr(channel, "id")}, {"name", jstr(channel, "name")}};
   json members = jval(channel, "memberAgentIds", json::array());
@@ -1463,6 +1493,9 @@ json Backend::trimTeamChannel(const json& channel) {
   json unread = jval(channel, "unreadByUser");
   out["unreadByUser"] = unread.is_number() ? unread : json(0);
   out["homeCwd"] = jstr(channel, "homeCwd");
+  // 写成员/组长时原样回传，避免把网页端刚做的改动静默覆盖
+  json revision = jval(channel, "governanceRevision");
+  if (revision.is_number()) out["governanceRevision"] = revision;
   return out;
 }
 
@@ -1550,6 +1583,8 @@ json Backend::teamStateFromCli() {
   json maxMembers = jval(data, "channelMaxMembers");
   return json{{"enabled", data.value("enabled", true)},
               {"canCreate", true},
+              // v2 写能力标记：旧后端的 state 没有这个字段，前端据此把成员面板降级为只读
+              {"canManage", true},
               {"orchestrationEnabled", data.value("orchestrationEnabled", false)},
               {"channelMaxMembers", maxMembers.is_number() ? maxMembers : json(12)},
               {"defaultAgentId", defaultAgentId},
@@ -1588,7 +1623,7 @@ void Backend::teamSeedCursor(const std::string& channelId, const std::string& af
 
 void Backend::initDemoTeam() {
   auto agent = [](const std::string& id, const std::string& name, int variant, const std::string& title,
-                  const std::string& model) {
+                  const std::string& model, const std::string& description) {
     return json{{"id", id},
                 {"name", name},
                 {"avatarVariant", variant},
@@ -1596,13 +1631,19 @@ void Backend::initDemoTeam() {
                 {"model", model},
                 {"permissionMode", "fullAccess"},
                 {"homeCwd", "d:/work/falcon"},
+                {"description", description},
+                {"createdBy", "user"},
                 {"lastActiveAt", nowMs() - 3600000}};
   };
   json agents = json::array(
-      {agent("demo-agent-review", "评审", 2, "接口与安全评审", "deepseek-v4.1-flash"),
-       agent("demo-agent-backend", "后端", 4, "服务端与接口实现", "deepseek-v4.1-flash"),
-       agent("demo-agent-frontend", "前端", 1, "Web 与交互实现", "glm-5.3"),
-       agent("demo-agent-sec", "安全", 5, "鉴权与风险复核", "hy4std")});
+      {agent("demo-agent-review", "评审", 2, "接口与安全评审", "deepseek-v4.1-flash",
+             "你是接口与安全评审。\n\n职责：动手前把接口契约、错误码、鉴权边界定清楚；对高风险改动给出明确的取舍。\n\n输出要求：先给结论，再给依据；引用文件时写路径和行号。"),
+       agent("demo-agent-backend", "后端", 4, "服务端与接口实现", "deepseek-v4.1-flash",
+             "你是服务端与接口实现。\n\n职责：按契约写 stub 与实现，补失败路径和幂等；不确定的地方先问，不要猜。\n\n风格：改动尽量小，先保证可回滚。"),
+       agent("demo-agent-frontend", "前端", 1, "Web 与交互实现", "glm-5.3",
+             "你是 Web 与交互实现。\n\n职责：把状态、空态、错误态都补齐；按仓库的设计 token 写样式，不引入新颜色。\n\n验收：每个改动都要有截图或可复现步骤。"),
+       agent("demo-agent-sec", "安全", 5, "鉴权与风险复核", "hy4std",
+             "你是鉴权与风险复核。\n\n职责：检查密钥、权限、依赖与发布包边界；发现风险时给出可执行的修复建议。\n\n口径：只报能被验证的问题，不放大猜测。")});
 
   const std::string cwd = "d:/work/falcon";
   json channels = json::array(
@@ -1701,16 +1742,20 @@ void Backend::initDemoTeam() {
 json Backend::demoTeamState() {
   std::lock_guard<std::mutex> lk(teamMu_);
   json presence = json::array();
+  json agents = json::array();
   for (const auto& agent : jval(demoTeam_, "agents", json::array())) {
     const std::string id = jstr(agent, "id");
     presence.push_back({{"agentId", id}, {"availability", id == "demo-agent-sec" ? "offline" : "active"}});
+    // 与真实路径一致：列表态不返回 description，详情走 GET /api/team/agent
+    agents.push_back(trimTeamAgent(agent));
   }
   return json{{"enabled", true},
               {"canCreate", true},
+              {"canManage", true},
               {"orchestrationEnabled", false},
               {"channelMaxMembers", 12},
               {"defaultAgentId", "demo-agent-default"},
-              {"agents", jval(demoTeam_, "agents", json::array())},
+              {"agents", agents},
               {"channels", jval(demoTeam_, "channels", json::array())},
               {"presence", presence}};
 }
@@ -1871,6 +1916,152 @@ json Backend::demoTeamCreateChannel(const std::string& name, const json& members
   demoTeam_["messages"][id] = json::array();
   teamWatches_[id] = TeamWatch{};
   return channel;
+}
+
+// demo 的成员全量替换：与真实 PATCH /channels/{id} 同样的约束（≥2、≤12、必须在名册里），
+// 同时把已移出成员的静音和组长一起清掉，避免 fixture 里留下悬空 id。
+json Backend::demoTeamUpdateMembers(const std::string& channelId, const json& members,
+                                    std::string& error) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  json ids = json::array();
+  std::vector<std::string> wanted;
+  for (const auto& id : members) {
+    if (!id.is_string()) continue;
+    const std::string value = id.get<std::string>();
+    if (std::find(wanted.begin(), wanted.end(), value) != wanted.end()) continue;
+    wanted.push_back(value);
+    ids.push_back(value);
+  }
+  if (wanted.size() < 2) {
+    error = "频道至少需要两个智能体";
+    return json::object();
+  }
+  if (wanted.size() > 12) {
+    error = "最多 12 个智能体";
+    return json::object();
+  }
+  json roster = jval(demoTeam_, "agents", json::array());
+  auto inRoster = [&](const std::string& id) {
+    for (const auto& agent : roster) {
+      if (jstr(agent, "id") == id) return true;
+    }
+    return false;
+  };
+  for (const auto& id : wanted) {
+    if (!inRoster(id)) {
+      error = "成员必须在智能体名册里";
+      return json::object();
+    }
+  }
+
+  for (auto& item : demoTeam_["channels"]) {
+    if (jstr(item, "id") != channelId) continue;
+    item["memberAgentIds"] = ids;
+    json muted = json::array();
+    for (const auto& id : jval(item, "mutedAgentIds", json::array())) {
+      if (id.is_string() && std::find(wanted.begin(), wanted.end(), id.get<std::string>()) != wanted.end()) {
+        muted.push_back(id);
+      }
+    }
+    item["mutedAgentIds"] = muted;
+    const std::string lead = jstr(item, "leadAgentId");
+    if (!lead.empty() && std::find(wanted.begin(), wanted.end(), lead) == wanted.end()) {
+      item["leadAgentId"] = "";
+    }
+    json revision = jval(item, "governanceRevision");
+    item["governanceRevision"] = (revision.is_number() ? revision.get<int>() : 0) + 1;
+    item["lastActiveAt"] = nowMs();
+    return trimTeamChannel(item);
+  }
+  error = "频道不存在";
+  return json::object();
+}
+
+json Backend::demoTeamUpdateLead(const std::string& channelId, const std::string& leadId,
+                                 std::string& error) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  for (auto& item : demoTeam_["channels"]) {
+    if (jstr(item, "id") != channelId) continue;
+    if (!leadId.empty()) {
+      bool member = false;
+      for (const auto& id : jval(item, "memberAgentIds", json::array())) {
+        if (id.is_string() && id.get<std::string>() == leadId) member = true;
+      }
+      if (!member) {
+        error = "组长必须是频道成员";
+        return json::object();
+      }
+    }
+    item["leadAgentId"] = leadId;
+    json revision = jval(item, "governanceRevision");
+    item["governanceRevision"] = (revision.is_number() ? revision.get<int>() : 0) + 1;
+    item["lastActiveAt"] = nowMs();
+    return trimTeamChannel(item);
+  }
+  error = "频道不存在";
+  return json::object();
+}
+
+json Backend::demoTeamAgent(const std::string& id) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  for (const auto& agent : jval(demoTeam_, "agents", json::array())) {
+    if (jstr(agent, "id") == id) return trimTeamAgentDetail(agent);
+  }
+  return json::object();
+}
+
+json Backend::demoTeamCreateAgent(const std::string& name, const std::string& title,
+                                  const std::string& description, const std::string& model,
+                                  const std::string& homeCwd, std::string& error) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  for (const auto& agent : jval(demoTeam_, "agents", json::array())) {
+    if (jstr(agent, "name") == name) {
+      error = "已有同名智能体，换个名字";
+      return json::object();
+    }
+  }
+  const int64_t now = nowMs();
+  json agent = {{"id", "demo-a-" + std::to_string(now)},
+                {"name", name},
+                {"title", title},
+                {"description", description},
+                {"model", model.empty() ? "deepseek-v4.1-flash" : model},
+                {"avatarVariant", 3},
+                {"permissionMode", "fullAccess"},
+                {"homeCwd", homeCwd.empty() ? "d:/work/falcon" : homeCwd},
+                {"visibility", "visible"},
+                {"createdBy", "user"},
+                {"lastActiveAt", now}};
+  demoTeam_["agents"].push_back(agent);
+  return trimTeamAgentDetail(agent);
+}
+
+json Backend::demoTeamUpdateAgent(const std::string& id, const json& patch, std::string& error) {
+  std::lock_guard<std::mutex> lk(teamMu_);
+  for (auto& agent : demoTeam_["agents"]) {
+    if (jstr(agent, "id") != id) continue;
+    if (patch.contains("name") && patch["name"].is_string()) agent["name"] = patch["name"];
+    if (patch.contains("title") && patch["title"].is_string()) {
+      const std::string title = patch["title"].get<std::string>();
+      if (title.empty()) {
+        agent.erase("title");
+      } else {
+        agent["title"] = title;
+      }
+    }
+    if (patch.contains("description") && patch["description"].is_string()) {
+      const std::string description = patch["description"].get<std::string>();
+      if (description.empty()) {
+        agent.erase("description");
+      } else {
+        agent["description"] = description;
+      }
+    }
+    if (patch.contains("model") && patch["model"].is_string()) agent["model"] = patch["model"];
+    return trimTeamAgentDetail(agent);
+  }
+  error = "智能体不存在";
+  return json::object();
 }
 
 void Backend::handleTeamState(const httplib::Request&, httplib::Response& res) {
@@ -2325,6 +2516,395 @@ void Backend::handleTeamRestart(const httplib::Request& req, httplib::Response& 
     return;
   }
   res.set_content(dumpJson(json{{"ok", true}}), "application/json; charset=utf-8");
+}
+
+// 成员增删走「全量替换」：CLI 的 PATCH 也是整表覆盖，前端只需要提交最终成员列表。
+void Backend::handleTeamMembers(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string channelId = jstr(body, "channelId");
+
+  auto fail = [&](const std::string& message, int status = 400) {
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}),
+                    "application/json; charset=utf-8");
+  };
+
+  if (!teamIdOk(channelId)) return fail("缺少合法的 channelId");
+
+  json members = json::array();
+  std::vector<std::string> seen;
+  for (const auto& item : jval(body, "memberAgentIds", json::array())) {
+    if (!item.is_string()) continue;
+    const std::string id = item.get<std::string>();
+    if (!teamIdOk(id)) continue;
+    if (std::find(seen.begin(), seen.end(), id) != seen.end()) continue;
+    seen.push_back(id);
+    members.push_back(id);
+  }
+
+  json state = demo_ ? demoTeamState() : teamStateFromCli();
+  if (!demo_ && !state.value("enabled", false)) {
+    return fail(jstr(state, "reason", "频道服务不可用，暂时不能改成员"));
+  }
+
+  json target = json::object();
+  for (const auto& channel : jval(state, "channels", json::array())) {
+    if (jstr(channel, "id") == channelId) target = channel;
+  }
+  if (target.empty()) return fail("频道不存在或已被删除", 404);
+
+  const std::string defaultAgentId = jstr(state, "defaultAgentId");
+  if (!defaultAgentId.empty() &&
+      std::find(seen.begin(), seen.end(), defaultAgentId) != seen.end()) {
+    return fail("默认分身不能加入频道，请换一个成员");
+  }
+
+  std::vector<std::string> roster;
+  for (const auto& agent : jval(state, "agents", json::array())) roster.push_back(jstr(agent, "id"));
+  for (const auto& id : seen) {
+    if (std::find(roster.begin(), roster.end(), id) == roster.end()) {
+      return fail("成员必须在智能体名册里，请刷新后重试");
+    }
+  }
+  if (members.size() < 2) return fail("频道至少需要两个智能体");
+  json maxValue = jval(state, "channelMaxMembers");
+  const int maxMembers = maxValue.is_number() ? maxValue.get<int>() : 12;
+  if (static_cast<int>(members.size()) > maxMembers) {
+    return fail("最多 " + std::to_string(maxMembers) + " 个智能体");
+  }
+
+  if (demo_) {
+    std::string error;
+    json channel = demoTeamUpdateMembers(channelId, members, error);
+    if (channel.empty()) return fail(error.empty() ? "修改成员失败" : error);
+    res.set_content(dumpJson(json{{"ok", true}, {"channel", channel}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  json patch = {{"memberAgentIds", members}};
+  json expected = jval(body, "expectedRevision");
+  if (expected.is_number_integer()) patch["expectedRevision"] = expected;
+
+  // 写操作 15s 超时、不重试：成员替换没有幂等键，重试可能把别人的改动覆盖回去
+  json resp = agentSend("PATCH", "/api/v1/agent-home/channels/" + channelId, patch, 15);
+  const int status = resp.value("status", 0);
+  json doc = jval(resp, "doc", json::object());
+  if (status != 200) {
+    if (status == 0) {
+      return fail(resp.value("timeout", false)
+                      ? "修改成员超时，结果未知；请刷新频道确认，不要直接重试"
+                      : jstr(resp, "error", "连不上频道服务"));
+    }
+    return fail(teamWriteErrorText(doc, "修改成员失败"),
+                status == 404 ? 404 : status == 409 ? 409 : 400);
+  }
+
+  json data = jval(doc, "data", json::object());
+  json channel = jval(data, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) channel = jval(doc, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) {
+    // PATCH 只回了部分字段时，用本地目标拼回完整频道；成员是刚写的，直接覆盖
+    channel = target;
+    channel["memberAgentIds"] = members;
+    if (!jstr(channel, "leadAgentId").empty() &&
+        std::find(seen.begin(), seen.end(), jstr(channel, "leadAgentId")) == seen.end()) {
+      channel["leadAgentId"] = "";
+    }
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"channel", trimTeamChannel(channel)}}),
+                  "application/json; charset=utf-8");
+}
+
+// 设/撤组长：CLI 用同一条 PATCH，leadAgentId 传 null 表示交回用户编排。
+void Backend::handleTeamLead(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string channelId = jstr(body, "channelId");
+  std::string leadId;
+  if (body.contains("leadAgentId") && body["leadAgentId"].is_string()) {
+    leadId = body["leadAgentId"].get<std::string>();
+  }
+
+  auto fail = [&](const std::string& message, int status = 400) {
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}),
+                    "application/json; charset=utf-8");
+  };
+
+  if (!teamIdOk(channelId)) return fail("缺少合法的 channelId");
+  if (!leadId.empty() && !teamIdOk(leadId)) return fail("leadAgentId 不合法");
+
+  json state = demo_ ? demoTeamState() : teamStateFromCli();
+  if (!demo_ && !state.value("enabled", false)) {
+    return fail(jstr(state, "reason", "频道服务不可用，暂时不能改组长"));
+  }
+  json target = json::object();
+  for (const auto& channel : jval(state, "channels", json::array())) {
+    if (jstr(channel, "id") == channelId) target = channel;
+  }
+  if (target.empty()) return fail("频道不存在或已被删除", 404);
+  if (!leadId.empty()) {
+    bool member = false;
+    for (const auto& id : jval(target, "memberAgentIds", json::array())) {
+      if (id.is_string() && id.get<std::string>() == leadId) member = true;
+    }
+    if (!member) return fail("组长必须是频道成员");
+  }
+
+  if (demo_) {
+    std::string error;
+    json channel = demoTeamUpdateLead(channelId, leadId, error);
+    if (channel.empty()) return fail(error.empty() ? "修改组长失败" : error);
+    res.set_content(dumpJson(json{{"ok", true}, {"channel", channel}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  json patch = json::object();
+  if (leadId.empty()) {
+    patch["leadAgentId"] = nullptr;
+  } else {
+    patch["leadAgentId"] = leadId;
+  }
+  json expected = jval(body, "expectedRevision");
+  if (expected.is_number_integer()) patch["expectedRevision"] = expected;
+
+  json resp = agentSend("PATCH", "/api/v1/agent-home/channels/" + channelId, patch, 15);
+  const int status = resp.value("status", 0);
+  json doc = jval(resp, "doc", json::object());
+  if (status != 200) {
+    if (status == 0) {
+      return fail(resp.value("timeout", false)
+                      ? "修改组长超时，结果未知；请刷新频道确认，不要直接重试"
+                      : jstr(resp, "error", "连不上频道服务"));
+    }
+    return fail(teamWriteErrorText(doc, "修改组长失败"),
+                status == 404 ? 404 : status == 409 ? 409 : 400);
+  }
+
+  json data = jval(doc, "data", json::object());
+  json channel = jval(data, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) channel = jval(doc, "channel", json::object());
+  if (!channel.is_object() || jstr(channel, "id").empty()) {
+    channel = target;
+    channel["leadAgentId"] = leadId;
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"channel", trimTeamChannel(channel)}}),
+                  "application/json; charset=utf-8");
+}
+
+// 单个 bot 详情。CLI 没有 GET /agents/{id}，只能读整份目录后挑选；description 只在这里返回。
+void Backend::handleTeamAgentGet(const httplib::Request& req, httplib::Response& res) {
+  const std::string id = req.get_param_value("id");
+  auto fail = [&](const std::string& message, int status = 400) {
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}),
+                    "application/json; charset=utf-8");
+  };
+  if (!teamIdOk(id)) return fail("缺少合法的 id");
+
+  if (demo_) {
+    json agent = demoTeamAgent(id);
+    if (agent.empty()) return fail("智能体不存在或已被删除", 404);
+    res.set_content(dumpJson(json{{"ok", true}, {"agent", agent}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  json data = agentGet("/api/v1/agent-home");
+  if (!data.is_object() || data.empty()) return fail("读不到智能体名册，请确认 CLI 已就绪", 502);
+  const std::string defaultAgentId = jstr(data, "defaultAgentId");
+  for (const auto& agent : jval(data, "agents", json::array())) {
+    if (jstr(agent, "id") != id) continue;
+    if (!defaultAgentId.empty() && id == defaultAgentId) {
+      return fail("默认分身没有可编辑的人设");
+    }
+    res.set_content(dumpJson(json{{"ok", true}, {"agent", trimTeamAgentDetail(agent)}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  fail("智能体不存在或已被删除", 404);
+}
+
+// 新建智能体：CLI 的 POST /agents 支持 name/title/description/model/homeCwd，
+// 不传 permissionMode 时沿用服务端默认，避免壳里伪造一个用户没选的权限。
+void Backend::handleTeamAgentCreate(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+
+  auto trim = [](const std::string& value) {
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(value[begin]))) begin++;
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) end--;
+    return value.substr(begin, end - begin);
+  };
+  auto fail = [&](const std::string& message, int status = 400) {
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}),
+                    "application/json; charset=utf-8");
+  };
+
+  const std::string name = trim(jstr(body, "name"));
+  const std::string title = trim(jstr(body, "title"));
+  const std::string description = trim(jstr(body, "description"));
+  const std::string model = trim(jstr(body, "model"));
+  const std::string homeCwd = trim(jstr(body, "homeCwd"));
+
+  if (name.empty()) return fail("请填写智能体名字");
+  if (utf8Truncate(name, 180) != name) return fail("名字最多 60 个字");
+  if (utf8Truncate(title, 180) != title) return fail("角色最多 60 个字");
+  if (utf8Truncate(description, 6000) != description) return fail("人设最多 2000 个字");
+
+  json state = demo_ ? demoTeamState() : teamStateFromCli();
+  if (!demo_ && !state.value("enabled", false)) {
+    return fail(jstr(state, "reason", "频道服务不可用，暂时不能新建智能体"));
+  }
+  for (const auto& agent : jval(state, "agents", json::array())) {
+    if (trim(jstr(agent, "name")) == name) return fail("已有同名智能体，换个名字");
+  }
+
+  if (demo_) {
+    std::string error;
+    json agent = demoTeamCreateAgent(name, title, description, model, homeCwd, error);
+    if (agent.empty()) return fail(error.empty() ? "新建智能体失败" : error);
+    res.set_content(dumpJson(json{{"ok", true}, {"agent", agent}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  json payload = {{"name", name}};
+  if (!title.empty()) payload["title"] = title;
+  if (!description.empty()) payload["description"] = description;
+  if (!model.empty()) payload["model"] = model;
+  if (!homeCwd.empty()) payload["homeCwd"] = homeCwd;
+
+  json resp = agentSend("POST", "/api/v1/agent-home/agents", payload, 15);
+  const int status = resp.value("status", 0);
+  json doc = jval(resp, "doc", json::object());
+  if (status != 200) {
+    if (status == 0) {
+      return fail(resp.value("timeout", false)
+                      ? "新建智能体超时，可能已经创建；请刷新名册确认，不要直接重试"
+                      : jstr(resp, "error", "连不上频道服务"));
+    }
+    return fail(teamWriteErrorText(doc, "新建智能体失败"));
+  }
+  json data = jval(doc, "data", json::object());
+  json agent = jval(data, "agent", json::object());
+  if (!agent.is_object() || jstr(agent, "id").empty()) agent = jval(doc, "agent", json::object());
+  if (!agent.is_object() || jstr(agent, "id").empty()) {
+    return fail("智能体服务没有返回新 bot，请刷新名册确认", 502);
+  }
+  res.set_content(dumpJson(json{{"ok", true}, {"agent", trimTeamAgentDetail(agent)}}),
+                  "application/json; charset=utf-8");
+}
+
+// 改人设/内部提示词：只提交用户改过的字段；description 就是该 bot 的系统提示词素材。
+void Backend::handleTeamAgentUpdate(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string id = jstr(body, "agentId").empty() ? jstr(body, "id") : jstr(body, "agentId");
+
+  auto trim = [](const std::string& value) {
+    size_t begin = 0;
+    size_t end = value.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(value[begin]))) begin++;
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) end--;
+    return value.substr(begin, end - begin);
+  };
+  auto fail = [&](const std::string& message, int status = 400) {
+    res.status = status;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", message}}),
+                    "application/json; charset=utf-8");
+  };
+
+  if (!teamIdOk(id)) return fail("缺少合法的 agentId");
+  if (!body.contains("name") && !body.contains("title") && !body.contains("description")) {
+    return fail("没有要保存的字段");
+  }
+
+  json patch = json::object();
+  if (body.contains("name")) {
+    const std::string name = trim(jstr(body, "name"));
+    if (name.empty()) return fail("名字不能为空");
+    if (utf8Truncate(name, 180) != name) return fail("名字最多 60 个字");
+    patch["name"] = name;
+  }
+  if (body.contains("title")) {
+    const std::string title = trim(jstr(body, "title"));
+    if (utf8Truncate(title, 180) != title) return fail("角色最多 60 个字");
+    patch["title"] = title;
+  }
+  if (body.contains("description")) {
+    // 人设允许清空：服务端把空字符串当成「删除该字段」
+    const std::string description = trim(jstr(body, "description"));
+    if (utf8Truncate(description, 6000) != description) return fail("人设最多 2000 个字");
+    patch["description"] = description;
+  }
+
+  json state = demo_ ? demoTeamState() : teamStateFromCli();
+  if (!demo_ && !state.value("enabled", false)) {
+    return fail(jstr(state, "reason", "频道服务不可用，暂时不能编辑智能体"));
+  }
+  if (patch.contains("name")) {
+    const std::string name = patch["name"].get<std::string>();
+    // 前端每次都会带 name；只有真的改名时才做重名检查，避免历史上同名的 bot 连人设都改不了
+    bool renamed = true;
+    for (const auto& agent : jval(state, "agents", json::array())) {
+      if (jstr(agent, "id") == id && trim(jstr(agent, "name")) == name) renamed = false;
+    }
+    if (renamed) {
+      for (const auto& agent : jval(state, "agents", json::array())) {
+        if (jstr(agent, "id") == id) continue;
+        if (trim(jstr(agent, "name")) == name) return fail("已有同名智能体，换个名字");
+      }
+    }
+  }
+
+  if (demo_) {
+    std::string error;
+    json agent = demoTeamUpdateAgent(id, patch, error);
+    if (agent.empty()) return fail(error.empty() ? "保存失败" : error);
+    res.set_content(dumpJson(json{{"ok", true}, {"agent", agent}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+
+  json resp = agentSend("PATCH", "/api/v1/agent-home/agents/" + id, patch, 15);
+  const int status = resp.value("status", 0);
+  json doc = jval(resp, "doc", json::object());
+  if (status != 200) {
+    if (status == 0) {
+      return fail(resp.value("timeout", false)
+                      ? "保存超时，结果未知；请刷新详情确认，不要直接重试"
+                      : jstr(resp, "error", "连不上频道服务"));
+    }
+    return fail(teamWriteErrorText(doc, "保存失败"), status == 404 ? 404 : 400);
+  }
+  json data = jval(doc, "data", json::object());
+  json agent = jval(data, "agent", json::object());
+  if (!agent.is_object() || jstr(agent, "id").empty()) agent = jval(doc, "agent", json::object());
+  json out = {{"ok", true}};
+  if (agent.is_object() && !agent.empty()) {
+    out["agent"] = trimTeamAgentDetail(agent);
+  } else {
+    // 响应缺字段时用本地值回填，至少让前端能把改动落到列表上
+    json merged = json{{"id", id}};
+    for (const auto& entry : patch.items()) merged[entry.key()] = entry.value();
+    out["agent"] = merged;
+  }
+  json channels = jval(data, "channels", json::array());
+  if (channels.is_array()) {
+    json trimmed = json::array();
+    for (const auto& channel : channels) {
+      if (channel.is_object()) trimmed.push_back(trimTeamChannel(channel));
+    }
+    out["channels"] = trimmed;
+  }
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
 }
 
 // /api/v1/stats 会扫全部历史会话，实测 0.9–1.2s；前端每轮对话要读好几次用量。
@@ -5291,6 +5871,13 @@ void Backend::setupRoutes() {
   srv_.Get("/api/team/events", [this](const auto& r, auto& s) { handleTeamEvents(r, s); });
   srv_.Post("/api/team/member", [this](const auto& r, auto& s) { handleTeamMember(r, s); });
   srv_.Post("/api/team/member/restart", [this](const auto& r, auto& s) { handleTeamRestart(r, s); });
+  // v2 成员/人设写操作：PATCH 与 POST 同义，前端统一用 PATCH；POST 留作兼容
+  srv_.Patch("/api/team/channel/members", [this](const auto& r, auto& s) { handleTeamMembers(r, s); });
+  srv_.Post("/api/team/channel/members", [this](const auto& r, auto& s) { handleTeamMembers(r, s); });
+  srv_.Post("/api/team/channel/lead", [this](const auto& r, auto& s) { handleTeamLead(r, s); });
+  srv_.Get("/api/team/agent", [this](const auto& r, auto& s) { handleTeamAgentGet(r, s); });
+  srv_.Post("/api/team/agent", [this](const auto& r, auto& s) { handleTeamAgentCreate(r, s); });
+  srv_.Patch("/api/team/agent", [this](const auto& r, auto& s) { handleTeamAgentUpdate(r, s); });
   srv_.Get("/api/catalog", [this](const auto& r, auto& s) { handleCatalog(r, s); });
   srv_.Get("/api/market/overview", [this](const auto& r, auto& s) { handleMarketOverview(r, s); });
   srv_.Post("/api/market/parse", [this](const auto& r, auto& s) { handleMarketParse(r, s); });

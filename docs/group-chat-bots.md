@@ -325,7 +325,7 @@ web-ui 的客户端基址：`const DI = '/api/v1/agent-home'`，所有请求带 
 | 项 | 为什么 |
 |---|---|
 | bot 自主互相聊天（自主唤醒、自动接力开关） | 每次唤醒 = 一次完整 agent run，会持续烧额度；v1 只允许「人工 `@` 才醒」 |
-| 群成员管理（增删成员、改角色/系统提示词） | 涉及写 `directory.json` 的完整权限链，v1 只读 + 静音；新建频道见 v1.5/§10，增删成员与改组仍留 v2 |
+| 群成员管理（增删成员、改角色/系统提示词） | v1 只读 + 静音；v2 第一波已实现增删成员、设/撤组长与 bot 人设编辑，见 §11 |
 | 消息引用 / 编辑 / 撤回 / 固定 | 接口都有，但 UI 成本高，先不做 |
 | 任务板 | 独立一套交互（拖拽、认领、完成），v1 用 `systemEvent` 展示即可 |
 | 附件上传 | 需要 presign/upload 链路，v1 只发文本 |
@@ -696,3 +696,138 @@ timeout 4 curl -s -N -H "X-CodeBuddy-Request: 1" -H "Accept: text/event-stream" 
 - **真实建频道尚未联调**：`POST /channels` 只做了「非法 JSON → 500」的路由存在性探针，没有在真实 `agent-home` 上创建过频道（会改用户数据）。真实返回的 `channel` 字段是否完整、重名是否真的被允许，都按「未验证」处理。
 - **设组长是第二次 PATCH**：不是原子操作。若 PATCH 失败，频道已经存在（无组长），用户需要重进频道手动设或删除重建；壳用 warning 提示。
 - 建频道没有幂等键：超时后不重试，避免出现两个同名频道；前端此时会报错并保留弹窗内容，用户可自行重试。
+
+---
+
+## 11. v2 第一波：成员管理 + bot 人设 + 新建智能体（2026-11-18）
+
+### 11.1 范围
+
+在 v1「只读 + 静音」的基础上补齐四件事，全部复用 agent-home 的写接口，壳里不另存名册：
+
+1. 频道成员增删（全量替换）；
+2. 设/撤组长（`leadAgentId` 传 `null` 即交回用户编排）；
+3. 查看/编辑 bot 的 `name` / `title` / `description`（人设与内部提示词）；
+4. 新建智能体，并可直接加入当前频道。
+
+不做：删除 bot、改头像、在详情里改模型/权限/工作目录、编辑 `systemPrompt` 的 append/replace 模式、任务板。
+
+### 11.2 真实接口（源码级反查 + 404 探针）
+
+反查对象：本机 CLI `2.184.0` 的 `dist/web-ui/assets/index-A0XYmDEG.js` 与 `dist/codebuddy-headless.js`。所有路径相对 `/api/v1/agent-home`。
+
+| 方法 | 路径 | 服务端方法 | 返回 | 用途 |
+|---|---|---|---|---|
+| PATCH | `/channels/{id}` | `updateChannel` | `{data:{channel}}` | 成员全量替换、设/撤组长、改名、静音 |
+| POST | `/channels` | `createChannel` | `{data:{channel}}` | v1.5 建频道，未变 |
+| POST | `/agents` | `createAgent` | `{data:{agent}}` | 新建 bot |
+| PATCH | `/agents/{id}` | `updateAgent` | `{data:{agent,groups,channels}}` | 改 name/title/description/model/engine/… |
+| GET | `/agents/{id}` | **不存在** | — | 单个 bot 详情只能读整份目录后挑选 |
+
+`PATCH /channels/{id}` 实际读取的 body：
+
+```jsonc
+{
+  "memberAgentIds": ["…"],     // 全量替换；<2 → 400，新增后 > 上限 → 400
+  "leadAgentId": "…" | null,   // null 显式清空；必须是频道成员
+  "mutedAgentIds": ["…"],      // 全量替换，必须在成员内
+  "name": "…",
+  "expectedRevision": 2        // 可选；带过期值 → 409 CHANNEL_REVISION_CONFLICT
+}
+```
+
+- 不传 `leadAgentId` 时，若原组长已不在新成员里，服务端会自动清空。
+- 每次成员/组长/名字变更 `governanceRevision` +1。
+- 错误码：404 `CHANNEL_NOT_FOUND`、409 `CHANNEL_REVISION_CONFLICT`、
+  400 `CHANNEL_MEMBERS`（人数）、400 `BAD_REQUEST`（`leadAgentId must identify a channel member` 等）。
+
+`POST /agents` / `PATCH /agents/{id}` 的可用字段：
+
+```jsonc
+{
+  "name": "…",          // 上限 60 字
+  "title": "…",         // 上限 60 字；PATCH 传空串 = 删除该字段
+  "description": "…",   // 人设/内部提示词素材；上限 2000 字；PATCH 空串 = 删除
+  "model": "…", "engine": "…", "permissionMode": "…", "homeCwd": "…",
+  "visibility": "visible" | "hidden", "avatarVariant": 1
+}
+```
+
+探针（不存在的 id，只验证路由，不写真实数据）：
+
+| 请求 | 结果 |
+|---|---|
+| `PATCH /channels/__probe__` | 404 `CHANNEL_NOT_FOUND` |
+| `PATCH /agents/__probe__` | 404 `AGENT_NOT_FOUND` |
+| `GET /agents/__probe__` | 404（该路由不存在） |
+
+`POST /agents` 没有做空 body 探针：服务端会给缺省名 `New Agent` 并真的落盘，属于写操作。
+
+### 11.3 壳路由（`src/backend.cpp`）
+
+风格与 `/api/team/*` 一致，全部毫秒级、不走 job；写操作统一 15s 超时、不重试。
+
+| 方法 | 路径 | 入参 | 返回 |
+|---|---|---|---|
+| PATCH / POST | `/api/team/channel/members` | `{channelId, memberAgentIds[], expectedRevision?}` | `{ok, channel}` |
+| POST | `/api/team/channel/lead` | `{channelId, leadAgentId: string\|null, expectedRevision?}` | `{ok, channel}` |
+| GET | `/api/team/agent?id=` | – | `{ok, agent}`（含 `description`） |
+| POST | `/api/team/agent` | `{name, title?, description?, model?, homeCwd?}` | `{ok, agent}` |
+| PATCH | `/api/team/agent` | `{agentId, name?, title?, description?}` | `{ok, agent, channels?}` |
+
+- `GET /api/team/state` 新增 `canManage: true`；旧 exe 没有这个字段，前端据此把成员面板降级为只读。
+- `trimTeamChannel` 增加 `governanceRevision`，写回时作为 `expectedRevision`，避免静默覆盖网页端的改动。
+- 上游英文错误在 `teamWriteErrorText` 里翻成中文（频道不存在、没有权限、组长必须是成员等）。
+
+### 11.4 校验
+
+成员（`/channel/members`）：
+
+- `channelId` 合法；成员去重后 2..`channelMaxMembers`；
+- 每个 id 必须在 `state.agents[]` 里（已排除默认分身与 hidden）；
+- 显式拒绝 `defaultAgentId`：「默认分身不能加入频道，请换一个成员」；
+- 组长若被移出，响应会带回清空后的 `leadAgentId`。
+
+bot：
+
+- `name` 非空、≤60 字、与名册里其他 bot 不重名（壳里做，CLI 允许同名）；
+- `title` ≤60 字；`description` ≤2000 字，允许清空；
+- 新建时 `model` 可省略 → 服务端默认；详情页只编辑 name/title/description，model/permissionMode/homeCwd 只读展示。
+
+### 11.5 demo 行为
+
+- fixture 里 4 个 bot 都补了多段人设（`description`），列表接口仍按真实形状裁掉，只有详情接口返回。
+- 成员替换：真实修改 `demoTeam_` 的 `memberAgentIds`，同步清掉已移出成员的静音与组长，并自增 `governanceRevision`。
+- 设/撤组长：直接改 fixture 的 `leadAgentId`。
+- 新建 bot：插入 `demoTeam_["agents"]`，id 形如 `demo-a-<ms>`；随后可被加入频道。
+- demo 实测（HTTP 级）：2→3 添加成功；3→2 移出成功；2→1 返回 400「频道至少需要两个智能体」；设组长/清空组长成功；改 description 后重新 GET 仍在；新建 bot 出现在 state 的 `agents[]` 且可加入频道。
+- 说明：CLI 的频道最少 2 人，**不存在 1 人频道**，所以「1→3」按「2→3」验证；2→1 是拒绝路径。
+
+### 11.6 前端
+
+- `ChannelMembersPopover`：组长卡片（可取消组长）+ 成员行；行 hover 出现「详情 / 设组长 / 静音 / 重启 / 移出」，移出在只剩 2 人时禁用并说明原因；底部「添加成员」「新建智能体」。
+- 添加成员是面板内的第二屏：从名册里多选未在频道的 bot，顶部显示 `当前+已选/上限`、还能添加多少；满了或超限时禁用并说明。
+- `AgentDetailDialog`：name/title/description 可编辑，显示 model/permissionMode/homeCwd；description 明说「会注入系统提示词，保存后对之后的新回复生效」；有 dirty 标记与关闭前确认。
+- `NewAgentDialog`：name/title/description/model（模型复用 chat store 的 `/api/models` 目录），可勾选「创建后加入当前频道」；频道已满时自动取消勾选并说明。
+- 历史消息的发言人/`@` 名称改用整份名册解析：移出成员后，它过去发的消息仍显示名字，不会变成「成员」。
+- 截图钩子：`__wbl.openMembers()`、`__wbl.editAgent(id)`、`__wbl.addMember(id)`（打开添加面板并预选该 bot）。
+- 只读降级：`canManage` 为 false 时隐藏详情/设组长/移出/新建入口，保留静音与重启。
+
+### 11.7 验证
+
+- `frontend npm run build` 通过；新增文件 `oxlint` 0 warning。
+- `bin/workbuddy-lite.verify.exe` 编译通过；未覆盖用户正在运行的 `bin/workbuddy-lite.exe`。
+- demo 截图（`bin/visual/`）：
+  `v2-members-panel.png`、`v2-members-add.png`、`v2-members-agent-edit.png`、
+  `v2-members-agent-saved.png`、`v2-members-new-agent.png`、`v2-members-lead.png`、
+  `v2-members-added.png`、`v2-members-removed.png`、`v2-members-dark.png`。
+- 回归：`bin/visual/regression-v2/{chat,workbench,empty}.png` 与 `v2-members-market.png`，会话/工作台/空态/插件市场均正常。
+
+### 11.8 未做 / 风险
+
+- **真实写操作仍未联调**：成员/组长/新建/改人设只对 demo 与 404 探针验证过；真实 `agent-home` 上会改用户数据，本轮没有执行。真实返回的字段完整性、`expectedRevision` 冲突频率、超时后的实际落盘状态都按「未验证」处理。
+- **hidden 成员**：校验依赖 `/api/team/state` 的 `agents[]`，它不含 hidden bot；若真实频道里有 hidden 成员，任何成员替换都会被「成员必须在智能体名册里」拒绝。当前用户的频道没有这种情况，但这是已知边界。
+- **组长能力**：服务端还会校验该 bot 是否有 lead capability；失败时返回的英文 message 与「必须是成员」相同，壳统一提示「组长必须是频道成员」，可能不够精确。
+- **并发编辑**：壳会带 `expectedRevision`，预期能拿到 409 并提示重试；本轮没有和网页端同时操作验证过。
+- **不支持的编辑**：详情页不改 model/permissionMode/homeCwd/avatar；不做删除 bot；不编辑 `systemPrompt` 的 append/replace；不做任务板。
+- **demo 的 revision 是模拟值**：只用于前端合并，不与真实服务端语义完全等价。

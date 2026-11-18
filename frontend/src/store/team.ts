@@ -16,6 +16,11 @@ export interface TeamAgent {
   permissionMode?: string
   homeCwd?: string
   lastActiveAt?: number
+  // 只有详情接口才带；列表态刻意不返回（可达 2000 字）
+  description?: string
+  engine?: string
+  visibility?: string
+  createdBy?: string
 }
 
 export interface TeamChannel {
@@ -28,6 +33,8 @@ export interface TeamChannel {
   lastActiveAt: number
   unreadByUser: number
   homeCwd: string
+  // 写成员/组长时回传，避免覆盖网页端刚做的改动
+  governanceRevision?: number
 }
 
 export interface ChannelSystemEvent {
@@ -58,6 +65,7 @@ interface MentionSignal {
 interface TeamState {
   enabled: boolean
   canCreate: boolean
+  canManage: boolean
   ready: boolean
   orchestrationEnabled: boolean
   channelMaxMembers: number
@@ -79,6 +87,19 @@ interface TeamState {
   pendingMentions: string[]
   workingAgentIds: string[]
   mentionSignal: MentionSignal | null
+  // v2 成员/人设：面板开合、候选、详情、保存中。写操作全部毫秒级，不走 job。
+  membersOpen: boolean
+  addMembersOpen: boolean
+  candidateIds: string[]
+  membersSaving: boolean
+  leadSaving: boolean
+  detailAgentId: string | null
+  detailAgent: TeamAgent | null
+  detailError: string
+  detailLoading: boolean
+  savingAgent: boolean
+  createAgentOpen: boolean
+  creatingAgent: boolean
 
   loadState: () => Promise<void>
   openChannel: (id: string) => Promise<void>
@@ -94,6 +115,31 @@ interface TeamState {
   closeCreate: () => void
   toggleMute: (agentId: string, muted: boolean) => Promise<void>
   restartAgent: (agentId: string) => Promise<void>
+  openMembers: () => Promise<void>
+  setMembersOpen: (open: boolean) => void
+  openAddMembers: (agentId?: string) => Promise<void>
+  closeAddMembers: () => void
+  toggleCandidate: (agentId: string) => void
+  addMembers: () => Promise<{ ok: boolean; error?: string }>
+  removeMember: (agentId: string) => Promise<{ ok: boolean; error?: string }>
+  setLead: (agentId: string | null) => Promise<{ ok: boolean; error?: string }>
+  openAgentDetail: (agentId: string) => Promise<void>
+  closeAgentDetail: () => void
+  saveAgent: (input: {
+    id: string
+    name: string
+    title: string
+    description: string
+  }) => Promise<{ ok: boolean; error?: string }>
+  openCreateAgent: () => void
+  closeCreateAgent: () => void
+  createAgent: (input: {
+    name: string
+    title: string
+    description: string
+    model: string
+    joinChannel: boolean
+  }) => Promise<{ ok: boolean; error?: string; warning?: string }>
   addMention: (agentId: string) => void
   removeMention: (agentId: string) => void
   clearMentions: () => void
@@ -134,6 +180,10 @@ export function cleanAgent(raw: unknown): TeamAgent | null {
     permissionMode: asString(item.permissionMode) || undefined,
     homeCwd: asString(item.homeCwd) || undefined,
     lastActiveAt: typeof item.lastActiveAt === 'number' ? item.lastActiveAt : undefined,
+    description: asString(item.description) || undefined,
+    engine: asString(item.engine) || undefined,
+    visibility: asString(item.visibility) || undefined,
+    createdBy: asString(item.createdBy) || undefined,
   }
 }
 
@@ -153,6 +203,8 @@ export function cleanChannel(raw: unknown): TeamChannel | null {
     lastActiveAt: asNumber(item.lastActiveAt),
     unreadByUser: asNumber(item.unreadByUser),
     homeCwd: asString(item.homeCwd),
+    governanceRevision:
+      typeof item.governanceRevision === 'number' ? item.governanceRevision : undefined,
   }
 }
 
@@ -218,6 +270,7 @@ function parseMentionIds(text: string, channel: TeamChannel, agents: TeamAgent[]
 export const useTeamStore = create<TeamState>((set, get) => ({
   enabled: false,
   canCreate: false,
+  canManage: false,
   ready: false,
   orchestrationEnabled: false,
   channelMaxMembers: 12,
@@ -239,6 +292,18 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   pendingMentions: [],
   workingAgentIds: [],
   mentionSignal: null,
+  membersOpen: false,
+  addMembersOpen: false,
+  candidateIds: [],
+  membersSaving: false,
+  leadSaving: false,
+  detailAgentId: null,
+  detailAgent: null,
+  detailError: '',
+  detailLoading: false,
+  savingAgent: false,
+  createAgentOpen: false,
+  creatingAgent: false,
 
   loadState: async () => {
     if (retryTimer) {
@@ -256,6 +321,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         enabled: !!state.enabled,
         // 旧后端没有 /api/team/channel；没有 canCreate 时不显示入口，避免点了才 404
         canCreate: !!state.canCreate,
+        // 旧后端没有 v2 写路由；没有 canManage 时成员面板保持只读
+        canManage: !!state.canManage,
         orchestrationEnabled: !!state.orchestrationEnabled,
         channelMaxMembers: Number(state.channelMaxMembers || 12),
         defaultAgentId: asString(state.defaultAgentId),
@@ -305,6 +372,11 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       pendingMentions: [],
       workingAgentIds: [],
       mentionSignal: null,
+      membersOpen: false,
+      addMembersOpen: false,
+      candidateIds: [],
+      membersSaving: false,
+      leadSaving: false,
       // 打开即本地清零，不回写 CLI 的 unreadByUser（避免和网页端互相清零）
       channels: get().channels.map((item) =>
         item.id === id ? { ...item, unreadByUser: 0 } : item,
@@ -344,6 +416,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       pendingMentions: [],
       workingAgentIds: [],
       mentionSignal: null,
+      membersOpen: false,
+      addMembersOpen: false,
+      candidateIds: [],
     })
     markUiState({ activeChannelId: '' })
   },
@@ -536,6 +611,238 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     }
   },
 
+  openMembers: async () => {
+    const state = get()
+    if (!state.enabled) {
+      toast.error('频道服务不可用')
+      return
+    }
+    let channelId = state.activeChannelId
+    if (!channelId) {
+      channelId = state.channels[0]?.id || null
+      if (!channelId) {
+        toast.error('还没有频道')
+        return
+      }
+      await state.openChannel(channelId)
+    }
+    if (!get().channels.some((item) => item.id === channelId)) return
+    set({ membersOpen: true, addMembersOpen: false, candidateIds: [] })
+  },
+
+  setMembersOpen: (open) =>
+    set({
+      membersOpen: open,
+      ...(open ? {} : { addMembersOpen: false, candidateIds: [] }),
+    }),
+
+  openAddMembers: async (agentId) => {
+    await get().openMembers()
+    const channel = activeChannelOf(get())
+    if (!channel) return
+    const preselect = agentId && !channel.memberAgentIds.includes(agentId) ? [agentId] : []
+    set({ addMembersOpen: true, candidateIds: preselect })
+  },
+
+  closeAddMembers: () => set({ addMembersOpen: false, candidateIds: [] }),
+
+  toggleCandidate: (agentId) => {
+    const state = get()
+    const channel = activeChannelOf(state)
+    if (!channel || channel.memberAgentIds.includes(agentId)) return
+    if (state.candidateIds.includes(agentId)) {
+      set({ candidateIds: state.candidateIds.filter((id) => id !== agentId) })
+      return
+    }
+    const room = state.channelMaxMembers - channel.memberAgentIds.length
+    if (state.candidateIds.length >= room) return
+    set({ candidateIds: [...state.candidateIds, agentId] })
+  },
+
+  addMembers: async () => {
+    const state = get()
+    const channel = activeChannelOf(state)
+    if (!channel) return { ok: false, error: '没有打开的频道' }
+    const additions = state.candidateIds.filter((id) => !channel.memberAgentIds.includes(id))
+    if (!additions.length) return { ok: false, error: '先选择要添加的成员' }
+    const next = [...channel.memberAgentIds, ...additions]
+    if (next.length > state.channelMaxMembers) {
+      return { ok: false, error: `最多 ${state.channelMaxMembers} 个智能体` }
+    }
+    return writeMembers(channel.id, next)
+  },
+
+  removeMember: async (agentId) => {
+    const channel = activeChannelOf(get())
+    if (!channel) return { ok: false, error: '没有打开的频道' }
+    if (!channel.memberAgentIds.includes(agentId)) return { ok: false, error: '该成员不在频道里' }
+    if (channel.memberAgentIds.length <= 2) {
+      const message = '频道至少需要两个智能体，不能再移出'
+      toast.error(message)
+      return { ok: false, error: message }
+    }
+    return writeMembers(
+      channel.id,
+      channel.memberAgentIds.filter((id) => id !== agentId),
+    )
+  },
+
+  setLead: async (agentId) => {
+    const state = get()
+    const channel = activeChannelOf(state)
+    if (!channel || state.leadSaving) return { ok: false, error: '没有打开的频道' }
+    if (agentId && !channel.memberAgentIds.includes(agentId)) {
+      return { ok: false, error: '组长必须是频道成员' }
+    }
+    if ((agentId || '') === (channel.leadAgentId || '')) return { ok: true }
+    set({ leadSaving: true })
+    try {
+      const result = await api.teamLead({
+        channelId: channel.id,
+        leadAgentId: agentId,
+        expectedRevision: channel.governanceRevision,
+      })
+      if (!result.ok) throw new Error(result.error || '修改组长失败')
+      const updated = cleanChannel(result.channel)
+      set((current) => ({
+        leadSaving: false,
+        channels: updated
+          ? current.channels.map((item) =>
+              item.id === updated.id ? { ...item, ...updated } : item,
+            )
+          : current.channels,
+      }))
+      const name = state.agents.find((agent) => agent.id === agentId)?.name
+      toast.success(agentId ? `已把 ${name || '该成员'} 设为组长` : '已交回用户编排')
+      return { ok: true }
+    } catch (error) {
+      set({ leadSaving: false })
+      const message = error instanceof Error ? error.message : String(error)
+      toast.error(message)
+      return { ok: false, error: message }
+    }
+  },
+
+  openAgentDetail: async (agentId) => {
+    const cached = get().agents.find((agent) => agent.id === agentId) || null
+    set({
+      detailAgentId: agentId,
+      detailAgent: cached,
+      detailError: '',
+      detailLoading: true,
+      savingAgent: false,
+    })
+    try {
+      const result = await api.teamAgent(agentId)
+      if (!result.ok) throw new Error(result.error || '读取智能体详情失败')
+      const agent = cleanAgent(result.agent)
+      if (!agent) throw new Error('频道服务没有返回智能体详情')
+      if (get().detailAgentId !== agentId) return
+      set({ detailAgent: agent, detailLoading: false })
+    } catch (error) {
+      if (get().detailAgentId !== agentId) return
+      set({
+        detailLoading: false,
+        detailError: error instanceof Error ? error.message : String(error),
+      })
+    }
+  },
+
+  closeAgentDetail: () =>
+    set({
+      detailAgentId: null,
+      detailAgent: null,
+      detailError: '',
+      detailLoading: false,
+      savingAgent: false,
+    }),
+
+  saveAgent: async (input) => {
+    const state = get()
+    if (!state.canManage) return { ok: false, error: '当前后端不支持编辑智能体' }
+    const name = input.name.trim()
+    if (!name) return { ok: false, error: '名字不能为空' }
+    set({ savingAgent: true })
+    try {
+      const result = await api.teamUpdateAgent({
+        agentId: input.id,
+        name,
+        title: input.title.trim(),
+        description: input.description.trim(),
+      })
+      if (!result.ok) throw new Error(result.error || '保存失败')
+      const agent = cleanAgent(result.agent)
+      set((current) => ({
+        savingAgent: false,
+        detailAgent: agent ?? current.detailAgent,
+        agents: agent
+          ? current.agents.map((item) => (item.id === agent.id ? { ...item, ...agent } : item))
+          : current.agents,
+        channels: mergeChannelList(current.channels, result.channels),
+      }))
+      toast.success('已保存，对该 bot 之后的回复生效')
+      return { ok: true }
+    } catch (error) {
+      set({ savingAgent: false })
+      const message = error instanceof Error ? error.message : String(error)
+      return { ok: false, error: message }
+    }
+  },
+
+  openCreateAgent: () =>
+    set({
+      createAgentOpen: true,
+      creatingAgent: false,
+      membersOpen: false,
+      addMembersOpen: false,
+      candidateIds: [],
+    }),
+
+  closeCreateAgent: () => set({ createAgentOpen: false, creatingAgent: false }),
+
+  createAgent: async (input) => {
+    const state = get()
+    if (!state.canManage) return { ok: false, error: '当前后端不支持新建智能体' }
+    const name = input.name.trim()
+    if (!name) return { ok: false, error: '请填写智能体名字' }
+    set({ creatingAgent: true })
+    try {
+      const result = await api.teamCreateAgent({
+        name,
+        title: input.title.trim(),
+        description: input.description.trim(),
+        model: input.model || undefined,
+      })
+      if (!result.ok) throw new Error(result.error || '新建智能体失败')
+      const agent = cleanAgent(result.agent)
+      if (!agent) throw new Error('频道服务没有返回新智能体')
+      set((current) => ({
+        creatingAgent: false,
+        createAgentOpen: false,
+        agents: [...current.agents.filter((item) => item.id !== agent.id), agent],
+      }))
+      toast.success(`已创建「${agent.name}」`)
+
+      let warning: string | undefined
+      const channel = activeChannelOf(get())
+      if (input.joinChannel && channel) {
+        if (channel.memberAgentIds.length >= get().channelMaxMembers) {
+          warning = '智能体已创建，但频道已满，未自动加入'
+        } else {
+          const joined = await writeMembers(channel.id, [...channel.memberAgentIds, agent.id])
+          if (!joined.ok) {
+            warning = '智能体已创建，但加入频道失败：' + (joined.error || '未知原因')
+          }
+        }
+      }
+      if (warning) toast.warning(warning)
+      return { ok: true, warning }
+    } catch (error) {
+      set({ creatingAgent: false })
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  },
+
   addMention: (agentId) => {
     if (!agentId) return
     if (!get().pendingMentions.includes(agentId)) {
@@ -590,6 +897,57 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
   setError: (message) => set({ error: message }),
 }))
+
+function activeChannelOf(state: TeamState) {
+  return state.channels.find((item) => item.id === state.activeChannelId)
+}
+
+function mergeChannelList(current: TeamChannel[], raw: unknown): TeamChannel[] {
+  if (!Array.isArray(raw)) return current
+  const byId = new Map(current.map((item) => [item.id, item]))
+  for (const entry of raw) {
+    const cleaned = cleanChannel(entry)
+    if (!cleaned) continue
+    byId.set(cleaned.id, { ...(byId.get(cleaned.id) || cleaned), ...cleaned })
+  }
+  return current.map((item) => byId.get(item.id) || item)
+}
+
+// 成员增删共用一条写路径：全量替换 + expectedRevision，成功后就地更新频道。
+async function writeMembers(
+  channelId: string,
+  memberAgentIds: string[],
+): Promise<{ ok: boolean; error?: string }> {
+  const channel = useTeamStore.getState().channels.find((item) => item.id === channelId)
+  if (!channel) return { ok: false, error: '频道不存在' }
+  if (memberAgentIds.length < 2) return { ok: false, error: '频道至少需要两个智能体' }
+  if (useTeamStore.getState().membersSaving) return { ok: false, error: '正在保存，请稍候' }
+  useTeamStore.setState({ membersSaving: true })
+  try {
+    const result = await api.teamSetMembers({
+      channelId,
+      memberAgentIds,
+      expectedRevision: channel.governanceRevision,
+    })
+    if (!result.ok) throw new Error(result.error || '修改成员失败')
+    const updated = cleanChannel(result.channel)
+    useTeamStore.setState((current) => ({
+      membersSaving: false,
+      addMembersOpen: false,
+      candidateIds: [],
+      channels: updated
+        ? current.channels.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
+        : current.channels,
+    }))
+    toast.success(memberAgentIds.length > channel.memberAgentIds.length ? '已添加成员' : '已移出成员')
+    return { ok: true }
+  } catch (error) {
+    useTeamStore.setState({ membersSaving: false })
+    const message = error instanceof Error ? error.message : String(error)
+    toast.error(message)
+    return { ok: false, error: message }
+  }
+}
 
 async function pollChannel(channelId: string, token: number) {
   let failures = 0

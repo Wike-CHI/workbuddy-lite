@@ -101,6 +101,8 @@ class Backend {
   // 群聊（agent-home 频道）：只做 CLI 的第四个客户端，不另存消息库。
   // state/messages 都必须裁字段；events 只回增量消息，避免把 995KB/4s 的 SSE 快照转给 WebView。
   json trimTeamAgent(const json& agent);
+  // 单 bot 详情：列表态刻意不带 description（可达 2000 字），只有点开详情才取
+  json trimTeamAgentDetail(const json& agent);
   json trimTeamChannel(const json& channel);
   json trimTeamMessage(const json& message);
   json teamStateFromCli();
@@ -112,6 +114,13 @@ class Backend {
   json demoTeamMessages(const std::string& channelId);
   json demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions);
   json demoTeamCreateChannel(const std::string& name, const json& members, const std::string& leadId);
+  json demoTeamUpdateMembers(const std::string& channelId, const json& members, std::string& error);
+  json demoTeamUpdateLead(const std::string& channelId, const std::string& leadId, std::string& error);
+  json demoTeamAgent(const std::string& id);
+  json demoTeamCreateAgent(const std::string& name, const std::string& title,
+                           const std::string& description, const std::string& model,
+                           const std::string& homeCwd, std::string& error);
+  json demoTeamUpdateAgent(const std::string& id, const json& patch, std::string& error);
   void demoTeamFlush();
   void handleTeamState(const httplib::Request&, httplib::Response&);
   void handleTeamCreate(const httplib::Request&, httplib::Response&);
@@ -120,6 +129,11 @@ class Backend {
   void handleTeamEvents(const httplib::Request&, httplib::Response&);
   void handleTeamMember(const httplib::Request&, httplib::Response&);
   void handleTeamRestart(const httplib::Request&, httplib::Response&);
+  void handleTeamMembers(const httplib::Request&, httplib::Response&);
+  void handleTeamLead(const httplib::Request&, httplib::Response&);
+  void handleTeamAgentGet(const httplib::Request&, httplib::Response&);
+  void handleTeamAgentCreate(const httplib::Request&, httplib::Response&);
+  void handleTeamAgentUpdate(const httplib::Request&, httplib::Response&);
 
   // 多文件夹工作空间：一个名字 + 最多 5 个文件夹，cwd 取第一个
   json findWorkspace(const std::string& id);

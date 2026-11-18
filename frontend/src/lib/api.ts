@@ -40,6 +40,14 @@ function post<T>(path: string, body: unknown): Promise<T> {
   })
 }
 
+function patch<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  })
+}
+
 export const api = {
   bootstrap: () => request<Bootstrap>('/api/bootstrap'),
   appUpdate: () =>
@@ -151,6 +159,7 @@ export const api = {
     request<{
       enabled: boolean
       canCreate?: boolean
+      canManage?: boolean
       orchestrationEnabled?: boolean
       channelMaxMembers?: number
       defaultAgentId?: string
@@ -185,6 +194,34 @@ export const api = {
     post<{ ok: boolean; channel?: unknown; error?: string }>('/api/team/member', payload),
   teamRestart: (agentId: string) =>
     post<{ ok: boolean; error?: string }>('/api/team/member/restart', { agentId }),
+  teamSetMembers: (payload: {
+    channelId: string
+    memberAgentIds: string[]
+    expectedRevision?: number
+  }) =>
+    patch<{ ok: boolean; channel?: unknown; error?: string }>('/api/team/channel/members', payload),
+  teamLead: (payload: {
+    channelId: string
+    leadAgentId: string | null
+    expectedRevision?: number
+  }) => post<{ ok: boolean; channel?: unknown; error?: string }>('/api/team/channel/lead', payload),
+  teamAgent: (id: string) =>
+    request<{ ok: boolean; agent?: unknown; error?: string }>(
+      `/api/team/agent?id=${encodeURIComponent(id)}`,
+    ),
+  teamCreateAgent: (payload: {
+    name: string
+    title?: string
+    description?: string
+    model?: string
+    homeCwd?: string
+  }) => post<{ ok: boolean; agent?: unknown; error?: string }>('/api/team/agent', payload),
+  teamUpdateAgent: (payload: {
+    agentId: string
+    name?: string
+    title?: string
+    description?: string
+  }) => patch<{ ok: boolean; agent?: unknown; channels?: unknown[]; error?: string }>('/api/team/agent', payload),
   log: (message: string) => {
     void fetch('/api/log', { method: 'POST', body: message, keepalive: true }).catch(() => undefined)
   },

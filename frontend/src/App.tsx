@@ -7,8 +7,10 @@ import { Composer } from '@/components/Composer'
 import { Sidebar } from '@/components/Sidebar'
 import { Topbar } from '@/components/Topbar'
 import { ChatThread } from '@/components/chat/ChatThread'
+import { AgentDetailDialog } from '@/components/team/AgentDetailDialog'
 import { ChannelView } from '@/components/team/ChannelView'
 import { CreateChannelDialog } from '@/components/team/CreateChannelDialog'
+import { NewAgentDialog } from '@/components/team/NewAgentDialog'
 import { MarketDialog } from '@/components/dialogs/MarketDialog'
 import { UpdateDialog } from '@/components/dialogs/UpdateDialog'
 import { IntelligentUiLibraryDialog } from '@/components/intelligent/IntelligentUiLibraryDialog'
@@ -127,6 +129,10 @@ export default function App() {
       openChannel: (id: string) => useTeamStore.getState().openChannel(id),
       teamSend: (text: string) => useTeamStore.getState().send(text),
       mention: (agentId: string) => useTeamStore.getState().requestMentionPanel(agentId),
+      // v2 验收钩子：成员面板 / bot 详情编辑 / 添加成员多选
+      openMembers: () => useTeamStore.getState().openMembers(),
+      editAgent: (agentId: string) => useTeamStore.getState().openAgentDetail(agentId),
+      addMember: (agentId: string) => useTeamStore.getState().openAddMembers(agentId),
       openWorkbench: (tab: 'files' | 'diff' | 'plan' | 'todos' | 'git' | 'tasks' | 'browser' = 'files') => {
         const store = useWorkbenchStore.getState()
         store.toggle(true)
@@ -177,6 +183,8 @@ export default function App() {
           <RightPanel />
         </div>
         {createChannelOpen && <CreateChannelDialog />}
+        <AgentDetailDialog />
+        <NewAgentDialog />
         <UsageDialog />
         <WorkspaceDialog />
         <MarketDialog />

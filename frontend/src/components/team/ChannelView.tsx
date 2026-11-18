@@ -57,7 +57,8 @@ export function ChannelView() {
   const previousLastId = React.useRef(lastMessageId)
   const channel = channels.find((item) => item.id === activeChannelId)
   const members = React.useMemo(() => agentsOfChannel(channel, agents), [channel, agents])
-  const byId = React.useMemo(() => new Map(members.map((agent) => [agent.id, agent])), [members])
+  // 用整份名册而不是当前成员：移出成员后，它过去发的消息仍应显示名字与头像
+  const byId = React.useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents])
   const lead = members.find((agent) => agent.id === channel?.leadAgentId)
   const working = workingAgentIds
     .map((id) => byId.get(id))
@@ -225,7 +226,7 @@ export function ChannelView() {
                     message={message}
                     agent={message.agentId ? byId.get(message.agentId) : undefined}
                     presence={message.agentId ? presence[message.agentId] : undefined}
-                    members={members}
+                    members={agents}
                     startOfRun={startOfRun}
                   />
                 </React.Fragment>
