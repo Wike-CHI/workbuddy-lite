@@ -160,6 +160,7 @@ export const api = {
       enabled: boolean
       canCreate?: boolean
       canManage?: boolean
+      canRead?: boolean
       orchestrationEnabled?: boolean
       channelMaxMembers?: number
       defaultAgentId?: string
@@ -169,13 +170,28 @@ export const api = {
       reason?: string
       retry?: boolean
     }>('/api/team/state'),
+  teamUnread: () =>
+    request<{
+      enabled?: boolean
+      channels?: { id: string; unread: number }[]
+      total?: number
+    }>('/api/team/unread'),
+  teamRead: (channelId: string) =>
+    post<{ ok: boolean; unread?: number; warning?: string; error?: string }>('/api/team/read', {
+      channelId,
+    }),
   teamMessages: (channelId: string, before = '') =>
     request<{ messages: unknown[]; hasMore: boolean; before: string }>(
       `/api/team/messages?channelId=${encodeURIComponent(channelId)}${
         before ? `&before=${encodeURIComponent(before)}` : ''
       }`,
     ),
-  teamSend: (payload: { channelId: string; text: string; mentionAgentIds: string[] }) =>
+  teamSend: (payload: {
+    channelId: string
+    text: string
+    mentionAgentIds: string[]
+    replyTo?: string
+  }) =>
     post<{ ok: boolean; message?: unknown; warning?: string; error?: string }>('/api/team/send', payload),
   teamCreate: (payload: { name: string; memberAgentIds: string[]; leadAgentId?: string }) =>
     post<{ ok: boolean; channel?: unknown; warning?: string; error?: string }>(

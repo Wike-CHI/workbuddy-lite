@@ -54,7 +54,22 @@ export interface ChannelMessage {
   systemEvent?: ChannelSystemEvent
   taskId?: string
   taskEvent?: string
+  // CLI 消息模型原生字段：被引用消息的 id；渲染时按当前已加载的消息解析
+  replyTo?: string
   pending?: boolean
+}
+
+export interface ReplyTarget {
+  id: string
+  from: string
+  agentId?: string
+  text: string
+  at: number
+}
+
+interface JumpSignal {
+  id: string
+  nonce: number
 }
 
 interface MentionSignal {
@@ -66,6 +81,7 @@ interface TeamState {
   enabled: boolean
   canCreate: boolean
   canManage: boolean
+  canRead: boolean
   ready: boolean
   orchestrationEnabled: boolean
   channelMaxMembers: number
@@ -79,6 +95,12 @@ interface TeamState {
   before: string
   lastSeq: number
   sending: boolean
+  // 未读：newCount 只统计「当前频道里、不在底部/窗口失焦时」新到的消息；
+  // 侧栏数字来自后端 /api/team/unread（本地游标 + CLI unreadByUser 迁移初值）。
+  newCount: number
+  replyTarget: ReplyTarget | null
+  highlightId: string | null
+  jumpSignal: JumpSignal | null
   creating: boolean
   createOpen: boolean
   loading: boolean
@@ -105,6 +127,16 @@ interface TeamState {
   openChannel: (id: string) => Promise<void>
   closeChannel: () => void
   loadMore: () => Promise<void>
+  markRead: (channelId?: string) => Promise<void>
+  noteAtBottom: (atBottom: boolean) => void
+  noteFocus: (focused: boolean) => void
+  quoteMessage: (message: ReplyTarget) => void
+  clearReplyTarget: () => void
+  requestJump: (id: string) => void
+  consumeJump: () => void
+  setHighlight: (id: string | null) => void
+  startUnreadPoll: () => void
+  stopUnreadPoll: () => void
   send: (text: string) => Promise<{ ok: boolean; error?: string }>
   createChannel: (input: {
     name: string
@@ -152,6 +184,12 @@ interface TeamState {
 let pollToken = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retryCount = 0
+let unreadTimer: ReturnType<typeof setInterval> | null = null
+let readTimer: ReturnType<typeof setTimeout> | null = null
+// 频道是否停在底部、窗口是否有焦点：两者任一为假，新消息就计入未读。
+// 初值取 true，demo/截图脚本不产生 blur 事件时行为稳定。
+let atBottomKnown = true
+let focusedKnown = true
 
 function asString(value: unknown, fallback = '') {
   return typeof value === 'string' ? value : fallback
@@ -232,6 +270,7 @@ export function cleanMessage(raw: unknown): ChannelMessage | null {
         : undefined,
     taskId: asString(item.taskId) || undefined,
     taskEvent: asString(item.taskEvent) || undefined,
+    replyTo: asString(item.replyTo) || undefined,
   }
 }
 
@@ -271,6 +310,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   enabled: false,
   canCreate: false,
   canManage: false,
+  canRead: false,
   ready: false,
   orchestrationEnabled: false,
   channelMaxMembers: 12,
@@ -284,6 +324,10 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   before: '',
   lastSeq: 0,
   sending: false,
+  newCount: 0,
+  replyTarget: null,
+  highlightId: null,
+  jumpSignal: null,
   creating: false,
   createOpen: false,
   loading: false,
@@ -323,6 +367,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         canCreate: !!state.canCreate,
         // 旧后端没有 v2 写路由；没有 canManage 时成员面板保持只读
         canManage: !!state.canManage,
+        // 旧后端没有 /api/team/read；没有 canRead 时只做本地清零，不落盘
+        canRead: !!state.canRead,
         orchestrationEnabled: !!state.orchestrationEnabled,
         channelMaxMembers: Number(state.channelMaxMembers || 12),
         defaultAgentId: asString(state.defaultAgentId),
@@ -338,6 +384,8 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       })
       if (state.enabled) {
         retryCount = 0
+        // 侧栏未读靠轻量轮询刷新；打开频道时的事件长轮询只覆盖当前频道
+        if (state.canRead) get().startUnreadPoll()
       } else if (state.retry && retryCount < 4) {
         // CLI 的 --serve 在后台预热，首屏可能还没起来；最多再试 4 次（2/4/6/8s）
         retryCount += 1
@@ -346,7 +394,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
           void get().loadState()
         }, 2000 * retryCount)
       }
+      if (!state.enabled) get().stopUnreadPoll()
     } catch (error) {
+      get().stopUnreadPoll()
       set({
         ready: true,
         enabled: false,
@@ -358,6 +408,9 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   openChannel: async (id) => {
     const channel = get().channels.find((item) => item.id === id)
     if (!channel) return
+    // 直接切到另一个频道也视为离开上一个频道，和 closeChannel 的已读口径保持一致
+    const previous = get().activeChannelId
+    if (previous && previous !== id) void get().markRead(previous)
     const token = ++pollToken
     set({
       activeChannelId: id,
@@ -377,11 +430,16 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       candidateIds: [],
       membersSaving: false,
       leadSaving: false,
-      // 打开即本地清零，不回写 CLI 的 unreadByUser（避免和网页端互相清零）
+      newCount: 0,
+      replyTarget: null,
+      highlightId: null,
+      jumpSignal: null,
+      // 打开即清零，并上报 /api/team/read 推进游标（CLI 可用时顺手清 unreadByUser）
       channels: get().channels.map((item) =>
         item.id === id ? { ...item, unreadByUser: 0 } : item,
       ),
     })
+    atBottomKnown = true
     markUiState({ activeChannelId: id })
     try {
       const page = await api.teamMessages(id)
@@ -391,6 +449,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         .filter((item): item is ChannelMessage => !!item)
         .sort((a, b) => a.at - b.at)
       set({ messages, hasMore: !!page.hasMore, before: page.before || '', loading: false })
+      void get().markRead(id)
       void pollChannel(id, token)
     } catch (error) {
       if (get().activeChannelId !== id) return
@@ -402,7 +461,11 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
 
   closeChannel: () => {
+    const current = get().activeChannelId
+    // 离开频道视为已读：避免在频道内看过的新消息，回到侧栏又冒红点
+    if (current) void get().markRead(current)
     pollToken += 1
+    atBottomKnown = true
     set({
       activeChannelId: null,
       messages: [],
@@ -419,6 +482,10 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       membersOpen: false,
       addMembersOpen: false,
       candidateIds: [],
+      newCount: 0,
+      replyTarget: null,
+      highlightId: null,
+      jumpSignal: null,
     })
     markUiState({ activeChannelId: '' })
   },
@@ -451,9 +518,70 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     }
   },
 
+  markRead: async (channelId) => {
+    const state = get()
+    const id = channelId || state.activeChannelId
+    if (!id) return
+    if (readTimer) {
+      clearTimeout(readTimer)
+      readTimer = null
+    }
+    set({
+      channels: get().channels.map((item) =>
+        item.id === id ? { ...item, unreadByUser: 0 } : item,
+      ),
+      ...(get().activeChannelId === id ? { newCount: 0 } : {}),
+    })
+    // 旧后端没有 /api/team/read：只清本地，重启后按 CLI 的字段重来
+    if (!state.canRead) return
+    try {
+      await api.teamRead(id)
+    } catch {
+      // 上报失败不影响本地已读；下一次打开会再推进一次游标
+    }
+  },
+
+  noteAtBottom: (value) => {
+    if (atBottomKnown === value) return
+    atBottomKnown = value
+    if (!value || !get().activeChannelId) return
+    // 回到底部即视为读完
+    scheduleMarkRead(300)
+  },
+
+  noteFocus: (value) => {
+    if (focusedKnown === value) return
+    focusedKnown = value
+    if (!value) return
+    if (get().activeChannelId && atBottomKnown) scheduleMarkRead(300)
+  },
+
+  quoteMessage: (message) => set({ replyTarget: message }),
+
+  clearReplyTarget: () => set({ replyTarget: null }),
+
+  requestJump: (id) => set({ jumpSignal: { id, nonce: Date.now() } }),
+
+  consumeJump: () => set({ jumpSignal: null }),
+
+  setHighlight: (id) => set({ highlightId: id }),
+
+  startUnreadPoll: () => {
+    if (unreadTimer) return
+    // 4s 一次轻量轮询；后端顺带做增量扫描，返回每条频道一个数字
+    unreadTimer = setInterval(() => {
+      void pollUnread()
+    }, 4000)
+  },
+
+  stopUnreadPoll: () => {
+    if (unreadTimer) clearInterval(unreadTimer)
+    unreadTimer = null
+  },
+
   send: async (text) => {
     const raw = text.trim()
-    const { activeChannelId, channels, agents, pendingMentions } = get()
+    const { activeChannelId, channels, agents, pendingMentions, replyTarget } = get()
     if (!activeChannelId) return { ok: false, error: '没有打开的频道' }
     if (!raw) return { ok: false, error: '消息为空' }
     const channel = channels.find((item) => item.id === activeChannelId)
@@ -463,6 +591,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     const mentionAgentIds = [...mentioned].filter((id) => channel.memberAgentIds.includes(id))
     // 静音成员不会被 CLI 唤醒，别为它们挂「正在处理」
     const awakeAgentIds = mentionAgentIds.filter((id) => !channel.mutedAgentIds.includes(id))
+    const replyTo = replyTarget?.id
     const at = Date.now()
     const local: ChannelMessage = {
       id: `local-${at}-${Math.random().toString(36).slice(2, 6)}`,
@@ -470,6 +599,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
       from: 'user',
       text: raw,
       mentionAgentIds,
+      ...(replyTo ? { replyTo } : {}),
       pending: true,
     }
     set({
@@ -490,21 +620,23 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         channelId: activeChannelId,
         text: raw,
         mentionAgentIds,
+        ...(replyTo ? { replyTo } : {}),
       })
       if (!result.ok) {
         set({
           messages: get().messages.filter((item) => item.id !== local.id),
           sending: false,
           workingAgentIds: [],
-          // 发送失败时文字还在输入框里，@ 芯片也一起还原，避免用户重打
+          // 发送失败时文字还在输入框里，@ 芯片和引用目标也一起还原，避免用户重打
           pendingMentions,
+          replyTarget,
         })
         return { ok: false, error: result.error || '发送失败' }
       }
       const message = cleanMessage(result.message)
       let messages = get().messages.filter((item) => item.id !== local.id)
       if (message) messages = upsert(messages, message)
-      set({ messages, sending: false })
+      set({ messages, sending: false, replyTarget: null })
       if (result.warning) toast.warning(result.warning)
       if (mentionAgentIds.length) {
         // 兜底：CLI 没有产生结束事件时，90s 后收起「正在处理」，避免无限转圈
@@ -523,6 +655,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         sending: false,
         workingAgentIds: [],
         pendingMentions,
+        replyTarget,
       })
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -883,9 +1016,19 @@ export const useTeamStore = create<TeamState>((set, get) => ({
     if (message.from === 'system' || message.kind === 'system' || message.kind === 'task') {
       working = []
     }
+    // 自己的回显不算未读；不在底部或窗口失焦时，别人/系统消息才累计浮条数字
+    let newCount = state.newCount
+    if (message.from !== 'user') {
+      if (!atBottomKnown || !focusedKnown) {
+        newCount += 1
+      } else {
+        scheduleMarkRead()
+      }
+    }
     set({
       messages,
       workingAgentIds: working,
+      newCount,
       error: '',
       channels: state.channels.map((channel) =>
         channel.id === state.activeChannelId
@@ -900,6 +1043,37 @@ export const useTeamStore = create<TeamState>((set, get) => ({
 
 function activeChannelOf(state: TeamState) {
   return state.channels.find((item) => item.id === state.activeChannelId)
+}
+
+// 合并短时间内的多次「已读」，避免一条回复就 PATCH 一次 CLI
+function scheduleMarkRead(delay = 800) {
+  if (readTimer) clearTimeout(readTimer)
+  readTimer = setTimeout(() => {
+    readTimer = null
+    void useTeamStore.getState().markRead()
+  }, delay)
+}
+
+// 侧栏未读：后端把「本地游标之后的消息数」算好，前端只做展示
+async function pollUnread() {
+  const state = useTeamStore.getState()
+  if (!state.enabled || !state.canRead) return
+  try {
+    const res = await api.teamUnread()
+    if (!res.enabled || !Array.isArray(res.channels)) return
+    const counts = new Map(
+      res.channels.map((item) => [item.id, Math.max(0, Number(item.unread) || 0)]),
+    )
+    useTeamStore.setState((current) => ({
+      channels: current.channels.map((channel) =>
+        counts.has(channel.id)
+          ? { ...channel, unreadByUser: counts.get(channel.id) || 0 }
+          : channel,
+      ),
+    }))
+  } catch {
+    // 红点刷新失败不打扰用户，下一次继续
+  }
 }
 
 function mergeChannelList(current: TeamChannel[], raw: unknown): TeamChannel[] {

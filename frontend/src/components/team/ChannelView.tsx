@@ -1,5 +1,6 @@
-import { ArrowLeft, FolderGit2, Loader2, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, ArrowDown, FolderGit2, Loader2, TriangleAlert } from 'lucide-react'
 import * as React from 'react'
+import { toast } from 'sonner'
 
 import { leafOf } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -49,10 +50,23 @@ export function ChannelView() {
   const closeChannel = useTeamStore((s) => s.closeChannel)
   const openChannel = useTeamStore((s) => s.openChannel)
   const loadMore = useTeamStore((s) => s.loadMore)
+  const newCount = useTeamStore((s) => s.newCount)
+  const highlightId = useTeamStore((s) => s.highlightId)
+  const jumpSignal = useTeamStore((s) => s.jumpSignal)
+  const markRead = useTeamStore((s) => s.markRead)
+  const noteAtBottom = useTeamStore((s) => s.noteAtBottom)
+  const noteFocus = useTeamStore((s) => s.noteFocus)
+  const quoteMessage = useTeamStore((s) => s.quoteMessage)
+  const requestJump = useTeamStore((s) => s.requestJump)
+  const consumeJump = useTeamStore((s) => s.consumeJump)
+  const setHighlight = useTeamStore((s) => s.setHighlight)
   const cwd = useChatStore((s) => s.cwd)
 
   const viewport = React.useRef<HTMLDivElement>(null)
   const bottom = React.useRef<HTMLDivElement>(null)
+  const atBottomRef = React.useRef(true)
+  // atBottom 进 state 是为了让「回到最新」按滚动位置出现；ref 供事件回调即时判断
+  const [atBottom, setAtBottom] = React.useState(true)
   const lastMessageId = messages.length ? messages[messages.length - 1].id : ''
   const previousLastId = React.useRef(lastMessageId)
   const channel = channels.find((item) => item.id === activeChannelId)
@@ -74,15 +88,79 @@ export function ChannelView() {
   }, [closeChannel])
 
   React.useEffect(() => {
-    if (loading) return
-    // 只有「最后一条」变化才滚到底：向上翻页是 prepend，不能把阅读位置甩到底部
-    if (lastMessageId !== previousLastId.current) {
-      previousLastId.current = lastMessageId
-      bottom.current?.scrollIntoView({ block: 'end' })
+    const onBlur = () => noteFocus(false)
+    const onFocus = () => noteFocus(true)
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
     }
-  }, [activeChannelId, loading, lastMessageId])
+  }, [noteFocus])
+
+  // 重新打开/重新载入同一个频道时，最后一条 id 可能没变；靠 loading 翻转重置，
+  // 否则第二次进入不会滚到底（会被误判成「用户正在看历史」）。
+  React.useEffect(() => {
+    if (!loading) return
+    previousLastId.current = ''
+    atBottomRef.current = true
+  }, [loading])
+
+  React.useEffect(() => {
+    if (loading) return
+    // 只有「最后一条」变化才滚到底：向上翻页是 prepend，不能把阅读位置甩到底部。
+    // 用户翻到上面看历史时也不要抢滚动，新消息交给「N 条新消息」浮条。
+    if (lastMessageId !== previousLastId.current) {
+      const latest = messages[messages.length - 1]
+      previousLastId.current = lastMessageId
+      // 只为自己刚发出、还没被服务端回声替换的消息让路；别人发的用户消息不应抢滚动
+      if (atBottomRef.current || latest?.pending) {
+        bottom.current?.scrollIntoView({ block: 'end' })
+      }
+    }
+  }, [activeChannelId, loading, lastMessageId, messages])
+
+  // 引用跳转：目标不在当前分页里就自动往前翻几页，找到后居中并短暂高亮
+  React.useEffect(() => {
+    if (!jumpSignal) return
+    let cancelled = false
+    const run = async () => {
+      const elementId = `channel-msg-${jumpSignal.id}`
+      let target = document.getElementById(elementId)
+      let attempts = 0
+      while (!target && attempts < 5) {
+        const state = useTeamStore.getState()
+        if (!state.hasMore || state.loadingMore || !state.before) break
+        await state.loadMore()
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+        if (cancelled) return
+        target = document.getElementById(elementId)
+        attempts += 1
+      }
+      if (cancelled) return
+      if (!target) {
+        consumeJump()
+        toast.info('原消息不在当前视图，向上翻一翻')
+        return
+      }
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      setHighlight(jumpSignal.id)
+      // 滚动与高亮都落下后再清信号：先清会让 effect 重跑并提前 cancel
+      consumeJump()
+      window.setTimeout(() => {
+        if (useTeamStore.getState().highlightId === jumpSignal.id) setHighlight(null)
+      }, 1800)
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [jumpSignal, consumeJump, setHighlight])
 
   const onLoadMore = async () => {
+    // 滚动事件会连续触发；loadMore 内部虽然会去重，但这里的滚动位置补偿不能重复执行
+    const state = useTeamStore.getState()
+    if (state.loadingMore || !state.hasMore || !state.before) return
     const element = viewport.current
     if (!element) return
     const previousHeight = element.scrollHeight
@@ -93,6 +171,39 @@ export function ChannelView() {
       if (!host) return
       host.scrollTop = host.scrollHeight - previousHeight + previousTop
     })
+  }
+
+  const byMessageId = React.useMemo(
+    () => new Map(messages.map((item) => [item.id, item])),
+    [messages],
+  )
+  const authorOf = (message: ChannelMessage) => {
+    if (message.from === 'user') return '我'
+    return (message.agentId && byId.get(message.agentId)?.name) || '成员'
+  }
+
+  const onScroll = () => {
+    const element = viewport.current
+    if (!element) return
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight
+    const next = distance < 48
+    if (next !== atBottomRef.current) {
+      atBottomRef.current = next
+      setAtBottom(next)
+      noteAtBottom(next)
+    }
+    // 上滑到顶部附近自动续页；loadMore 内部有 hasMore / loadingMore 保护
+    if (element.scrollTop < 72) void onLoadMore()
+  }
+
+  const jumpToLatest = () => {
+    // 直接设 scrollTop 而不是 smooth：markRead 引起的重渲染会打断平滑滚动，
+    // 结果停在原地、浮条又冒出来（实测）。瞬时到底更可靠。
+    const host = viewport.current
+    if (host) host.scrollTop = host.scrollHeight
+    atBottomRef.current = true
+    setAtBottom(true)
+    void markRead()
   }
 
   if (!channel) {
@@ -180,71 +291,97 @@ export function ChannelView() {
         </div>
       )}
 
-      <div ref={viewport} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[800px] flex-col gap-2.5 px-4 py-4">
-          {loading && (
-            <div className="flex items-center justify-center gap-2 py-10 text-[12px] text-ink-3">
-              <Loader2 className="size-3.5 animate-spin" />
-              正在载入频道…
-            </div>
-          )}
+      <div className="relative min-h-0 flex-1">
+        <div id="channel-thread" ref={viewport} onScroll={onScroll} className="h-full overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-[800px] flex-col gap-2.5 px-4 py-4">
+            {loading && (
+              <div className="flex items-center justify-center gap-2 py-10 text-[12px] text-ink-3">
+                <Loader2 className="size-3.5 animate-spin" />
+                正在载入频道…
+              </div>
+            )}
 
-          {!loading && hasMore && (
-            <div className="flex justify-center">
-              <button
-                type="button"
-                disabled={loadingMore}
-                onClick={() => void onLoadMore()}
-                className="rounded-full border border-border px-3 py-1 text-[11px] text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2 disabled:opacity-50"
-              >
-                {loadingMore ? '载入更早消息…' : '载入更早消息'}
-              </button>
-            </div>
-          )}
+            {!loading && hasMore && (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={() => void onLoadMore()}
+                  className="rounded-full border border-border px-3 py-1 text-[11px] text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink-2 disabled:opacity-50"
+                >
+                  {loadingMore ? '载入更早消息…' : '载入更早消息'}
+                </button>
+              </div>
+            )}
 
-          {!loading &&
-            messages.map((message, index) => {
-              const previous = index > 0 ? messages[index - 1] : undefined
-              const divider = !previous || !sameDay(previous.at, message.at)
-              if (isSystem(message)) {
+            {!loading &&
+              messages.map((message, index) => {
+                const previous = index > 0 ? messages[index - 1] : undefined
+                const divider = !previous || !sameDay(previous.at, message.at)
+                if (isSystem(message)) {
+                  return (
+                    <React.Fragment key={message.id}>
+                      {divider && <ChannelDayDivider at={message.at} />}
+                      <ChannelSystemEvent text={message.text} at={message.at} />
+                    </React.Fragment>
+                  )
+                }
+                const startOfRun =
+                  !previous ||
+                  isSystem(previous) ||
+                  previous.from !== message.from ||
+                  previous.agentId !== message.agentId
+                const quotedMessage = message.replyTo ? byMessageId.get(message.replyTo) : undefined
                 return (
                   <React.Fragment key={message.id}>
                     {divider && <ChannelDayDivider at={message.at} />}
-                    <ChannelSystemEvent text={message.text} at={message.at} />
+                    <ChannelMessageRow
+                      message={message}
+                      agent={message.agentId ? byId.get(message.agentId) : undefined}
+                      presence={message.agentId ? presence[message.agentId] : undefined}
+                      members={agents}
+                      startOfRun={startOfRun}
+                      quoted={
+                        quotedMessage
+                          ? { text: quotedMessage.text, author: authorOf(quotedMessage) }
+                          : undefined
+                      }
+                      quotedMissing={!!message.replyTo && !quotedMessage}
+                      highlighted={highlightId === message.id}
+                      onQuote={() => quoteMessage(message)}
+                      onJump={requestJump}
+                    />
                   </React.Fragment>
                 )
-              }
-              const startOfRun =
-                !previous ||
-                isSystem(previous) ||
-                previous.from !== message.from ||
-                previous.agentId !== message.agentId
-              return (
-                <React.Fragment key={message.id}>
-                  {divider && <ChannelDayDivider at={message.at} />}
-                  <ChannelMessageRow
-                    message={message}
-                    agent={message.agentId ? byId.get(message.agentId) : undefined}
-                    presence={message.agentId ? presence[message.agentId] : undefined}
-                    members={agents}
-                    startOfRun={startOfRun}
-                  />
-                </React.Fragment>
-              )
-            })}
+              })}
 
-          {!loading && !messages.length && (
-            <div className="py-14 text-center">
-              <div className="text-[13.5px] font-medium text-ink-2">给「{channel.name}」发第一条</div>
-              <div className="mt-1 text-[11.5px] text-ink-4">
-                输入 @ 选择成员；只有被 @ 的智能体会被唤醒
+            {!loading && !messages.length && (
+              <div className="py-14 text-center">
+                <div className="text-[13.5px] font-medium text-ink-2">给「{channel.name}」发第一条</div>
+                <div className="mt-1 text-[11.5px] text-ink-4">
+                  输入 @ 选择成员；只有被 @ 的智能体会被唤醒
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {!loading && working.length > 0 && <ChannelLiveRow agents={working} />}
-          <div ref={bottom} className="h-1" />
+            {!loading && working.length > 0 && <ChannelLiveRow agents={working} />}
+            <div ref={bottom} className="h-1" />
+          </div>
         </div>
+
+        {(newCount > 0 || !atBottom) && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-background via-background/90 to-transparent pb-2.5 pt-8">
+            <button
+              id="channel-jump-latest"
+              type="button"
+              onClick={jumpToLatest}
+              className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-popover/95 px-3 py-1.5 text-[11.5px] text-ink-2 shadow-lg backdrop-blur transition-colors hover:bg-surface-2"
+            >
+              {newCount > 0 ? `${newCount} 条新消息` : '回到最新'}
+              <ArrowDown className="size-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       <ChannelComposer key={channel.id} channel={channel} />

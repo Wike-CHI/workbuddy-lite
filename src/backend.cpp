@@ -1456,6 +1456,38 @@ json teamLocalMessage(const std::string& text, const json& mentions, const std::
 
 }  // namespace
 
+namespace {
+
+// 未读游标与界面状态共用 ui-state.json：用户明确要求复用已有机制，不另建库。
+// 读改写都在这把命名互斥量里完成，避免和 handleUiStateSet 互相覆盖。
+void mutateUiStateDoc(const std::function<void(json&)>& fn) {
+  const std::string path = localAppDir() + "\\ui-state.json";
+  const std::string tmp = path + ".tmp";
+  HANDLE mtx = CreateMutexA(nullptr, FALSE, "Local\\WorkBuddyLiteUiState");
+  if (mtx) WaitForSingleObject(mtx, 5000);
+  json doc = readJsonFile(path);
+  if (!doc.is_object()) doc = json::object();
+  fn(doc);
+  doc["updatedAt"] = nowMs();
+  std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+  if (out) {
+    out << dumpJson(doc);
+    out.close();
+    MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+  }
+  if (mtx) {
+    ReleaseMutex(mtx);
+    CloseHandle(mtx);
+  }
+}
+json teamReadDoc() {
+  json doc = readJsonFile(localAppDir() + "\\ui-state.json");
+  json state = jval(doc, "teamRead", json::object());
+  return state.is_object() ? state : json::object();
+}
+
+}  // namespace
+
 json Backend::trimTeamAgent(const json& agent) {
   json out = {{"id", jstr(agent, "id")}, {"name", jstr(agent, "name")}};
   for (const char* key : {"avatarVariant", "title", "model", "permissionMode", "homeCwd"}) {
@@ -1504,7 +1536,7 @@ json Backend::trimTeamMessage(const json& message) {
               {"at", jval(message, "at", 0)},
               {"from", jstr(message, "from", "user")},
               {"text", jstr(message, "text")}};
-  for (const char* key : {"agentId", "taskId", "taskEvent"}) {
+  for (const char* key : {"agentId", "taskId", "taskEvent", "replyTo"}) {
     std::string value = jstr(message, key);
     if (!value.empty()) out[key] = value;
   }
@@ -1581,15 +1613,37 @@ json Backend::teamStateFromCli() {
   }
 
   json maxMembers = jval(data, "channelMaxMembers");
+  {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    teamChannelIds_.clear();
+    for (const auto& channel : channels) {
+      const std::string id = jstr(channel, "id");
+      if (id.empty()) continue;
+      teamChannelIds_.push_back(id);
+      json unread = jval(channel, "unreadByUser", 0);
+      teamCliUnread_[id] = unread.is_number() ? unread.get<int>() : 0;
+    }
+  }
+  json mergedChannels = json::array();
+  for (const auto& channel : channels) {
+    json item = channel;
+    json unread = jval(channel, "unreadByUser", 0);
+    item["unreadByUser"] =
+        teamUnreadCount(jstr(channel, "id"), unread.is_number() ? unread.get<int>() : 0);
+    mergedChannels.push_back(item);
+  }
+
   return json{{"enabled", data.value("enabled", true)},
               {"canCreate", true},
               // v2 写能力标记：旧后端的 state 没有这个字段，前端据此把成员面板降级为只读
               {"canManage", true},
+              // v2 未读：旧后端没有 /api/team/read，前端据此退回只读未读（只显示不清零）
+              {"canRead", true},
               {"orchestrationEnabled", data.value("orchestrationEnabled", false)},
               {"channelMaxMembers", maxMembers.is_number() ? maxMembers : json(12)},
               {"defaultAgentId", defaultAgentId},
               {"agents", agents},
-              {"channels", channels},
+              {"channels", mergedChannels},
               {"presence", presence}};
 }
 
@@ -1618,6 +1672,167 @@ void Backend::teamSeedCursor(const std::string& channelId, const std::string& af
   if (reset) {
     watch.queue.clear();
     watch.seq = 0;
+  }
+}
+
+// 读游标只在进程内加载一次；之后由 markRead 推进并立即落盘
+void Backend::loadTeamReadCursors() {
+  std::lock_guard<std::mutex> lk(teamUnreadMu_);
+  if (teamReadLoaded_) return;
+  teamReadLoaded_ = true;
+  json doc = teamReadDoc();
+  for (auto it = doc.begin(); it != doc.end(); ++it) {
+    if (!it.value().is_object()) continue;
+    json at = jval(it.value(), "at", 0);
+    if (!at.is_number() || at.get<int64_t>() <= 0) continue;
+    auto& state = teamUnreads_[it.key()];
+    state.hasCursor = true;
+    state.readAt = at.get<int64_t>();
+  }
+}
+
+// 未读数：有本地读游标就以 pending 为准；没有（首次升级/首次启动）沿用 CLI 的 unreadByUser。
+// 两者绝不相加——CLI 字段只作为迁移初值，避免侧栏出现双倍数字。
+int Backend::teamUnreadCount(const std::string& channelId, int cliUnread) {
+  loadTeamReadCursors();
+  std::lock_guard<std::mutex> lk(teamUnreadMu_);
+  auto it = teamUnreads_.find(channelId);
+  if (it == teamUnreads_.end() || !it->second.hasCursor) return cliUnread;
+  return static_cast<int>(it->second.pending.size());
+}
+
+void Backend::teamMarkRead(const std::string& channelId) {
+  if (channelId.empty()) return;
+  loadTeamReadCursors();
+  int64_t readAt = 0;
+  {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    auto& state = teamUnreads_[channelId];
+    readAt = state.readAt;
+    if (state.lastMessageAt > readAt) readAt = state.lastMessageAt;
+    for (const auto& item : state.pending) {
+      json at = jval(item, "at", 0);
+      if (at.is_number() && at.get<int64_t>() > readAt) readAt = at.get<int64_t>();
+    }
+    if (readAt <= 0) readAt = nowMs();
+    state.readAt = readAt;
+    state.hasCursor = true;
+    state.pending.clear();
+  }
+
+  // 游标按 channelId 存在 ui-state.json 的 teamRead 下；重启后靠它恢复未读
+  mutateUiStateDoc([&](json& doc) {
+    json cursors = jval(doc, "teamRead", json::object());
+    if (!cursors.is_object()) cursors = json::object();
+    cursors[channelId] = {{"at", readAt}};
+    doc["teamRead"] = cursors;
+  });
+
+  if (demo_) {
+    std::lock_guard<std::mutex> lk(teamMu_);
+    for (auto& item : demoTeam_["channels"]) {
+      if (jstr(item, "id") == channelId) item["unreadByUser"] = 0;
+    }
+    return;
+  }
+
+  // CLI 的 unreadByUser 只会被显式写；用户确实读了才顺手清零，让网页端/桌面端
+  // 不再看到过期红点。失败不影响本地游标。
+  int cliUnread = 0;
+  {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    cliUnread = teamCliUnread_[channelId];
+  }
+  if (cliUnread <= 0) return;
+  json resp = agentSend("PATCH", "/api/v1/agent-home/channels/" + channelId,
+                        json{{"unreadByUser", 0}}, 5);
+  if (resp.value("status", 0) == 200) {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    teamCliUnread_[channelId] = 0;
+  }
+}
+
+// 后台没有常驻线程：前端每 4s 调一次 /api/team/unread，这里按需增量扫描。
+// 首次扫描读整页历史（最多 218 条）回填离线未读，之后只走 messages/page?after= 的增量。
+void Backend::refreshTeamUnread() {
+  loadTeamReadCursors();
+  const int64_t now = nowMs();
+  std::vector<std::string> ids;
+  {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    if (now - teamUnreadScannedAt_ < 1200) return;
+    teamUnreadScannedAt_ = now;
+    ids = teamChannelIds_;
+  }
+  if (ids.empty()) return;
+  if (demo_) {
+    demoTeamFlush();
+  } else if (!host_ || !host_->ready()) {
+    return;
+  }
+
+  for (const auto& id : ids) {
+    if (id.empty()) continue;
+    bool inited = false;
+    std::string after;
+    int64_t lastMessageAt = 0;
+    {
+      std::lock_guard<std::mutex> lk(teamUnreadMu_);
+      auto& state = teamUnreads_[id];
+      inited = state.inited;
+      after = state.after;
+      lastMessageAt = state.lastMessageAt;
+    }
+
+    json list = json::array();
+    std::string nextAfter = after;
+    if (demo_) {
+      std::lock_guard<std::mutex> lk(teamMu_);
+      json messages = jval(demoTeam_, "messages", json::object());
+      if (messages.contains(id) && messages[id].is_array()) {
+        for (const auto& message : messages[id]) {
+          json at = jval(message, "at", 0);
+          if (!inited) {
+            list.push_back(message);
+          } else if (at.is_number() && at.get<int64_t>() > lastMessageAt) {
+            list.push_back(message);
+          }
+        }
+      }
+    } else {
+      json pageResp;
+      json page = teamPageFromCli(id, "", inited ? after : "", pageResp);
+      if (pageResp.value("status", 0) != 200) continue;
+      list = jval(page, "messages", json::array());
+      nextAfter = jstr(page, "after", after);
+    }
+
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    auto& state = teamUnreads_[id];
+    if (!nextAfter.empty()) state.after = nextAfter;
+    state.inited = true;
+    for (const auto& message : list) {
+      if (!message.is_object()) continue;
+      const std::string mid = jstr(message, "id");
+      if (mid.empty()) continue;
+      json atValue = jval(message, "at", 0);
+      const int64_t at = atValue.is_number() ? atValue.get<int64_t>() : 0;
+      if (at > state.lastMessageAt) state.lastMessageAt = at;
+      // 没有读游标时保留 CLI 的 unreadByUser 作为迁移初值，不把整页历史算成未读
+      if (!state.hasCursor) continue;
+      if (jstr(message, "from") == "user") continue;
+      if (at <= state.readAt) continue;
+      bool seen = false;
+      for (const auto& item : state.pending) {
+        if (jstr(item, "id") == mid) {
+          seen = true;
+          break;
+        }
+      }
+      if (seen) continue;
+      state.pending.push_back({{"id", mid}, {"at", at}});
+    }
+    while (state.pending.size() > 500) state.pending.pop_front();
   }
 }
 
@@ -1667,7 +1882,10 @@ void Backend::initDemoTeam() {
         {"unreadByUser", 0},
         {"homeCwd", cwd}}});
 
-  const int64_t base = nowMs() - 7200000;
+  // demo 消息时间固定到当天（UTC 零点 + 2 分钟），同一天内重启不会把「已读」冲掉；
+  // 否则每次启动 base 都往后移，持久化的读游标永远追不上。
+  const int64_t demoNow = nowMs();
+  const int64_t base = demoNow - (demoNow % 86400000) + 120000;
   auto user = [&](int64_t at, const std::string& text, const json& mentions = json::array()) {
     json m = {{"id", "demo-m-" + std::to_string(at) + "-u"}, {"at", at}, {"from", "user"}, {"text", text}};
     if (!mentions.empty()) m["mentionAgentIds"] = mentions;
@@ -1722,6 +1940,21 @@ void Backend::initDemoTeam() {
                      "截图放在 `docs/ui/team-empty.png`，今晚再补一张深色。"));
   main.push_back(sys(base + 900000, "本轮收场：所有被叫到的成员都已回复。", "room-turn-ended", "done",
                      json::array({"评审", "前端"})));
+  // 引用示例：回复用户「好，按这个改」；再让用户引用这条成员消息。
+  // CLI 的 replyTo 就是消息 id，消息行据此渲染引用块并支持跳转。
+  const std::string quoteUserId = "demo-m-" + std::to_string(base + 600000) + "-u";
+  const std::string quoteBotId = "demo-m-" + std::to_string(base + 930000) + "-demo-agent-review";
+  main.push_back(json{{"id", quoteBotId},
+                      {"at", base + 930000},
+                      {"from", "agent"},
+                      {"agentId", "demo-agent-review"},
+                      {"replyTo", quoteUserId},
+                      {"text", "按上一条说的改完了：`POST /orders` 的幂等键挪到 header，body 不再带。"}});
+  main.push_back(json{{"id", "demo-m-" + std::to_string(base + 970000) + "-u"},
+                      {"at", base + 970000},
+                      {"from", "user"},
+                      {"text", "这条结论贴到发布清单里"},
+                      {"replyTo", quoteBotId}});
 
   json release = json::array();
   release.push_back(user(base + 1000000, "发布窗口定在周四 20:00，先冻 main。"));
@@ -1740,23 +1973,48 @@ void Backend::initDemoTeam() {
 }
 
 json Backend::demoTeamState() {
-  std::lock_guard<std::mutex> lk(teamMu_);
   json presence = json::array();
   json agents = json::array();
-  for (const auto& agent : jval(demoTeam_, "agents", json::array())) {
-    const std::string id = jstr(agent, "id");
-    presence.push_back({{"agentId", id}, {"availability", id == "demo-agent-sec" ? "offline" : "active"}});
-    // 与真实路径一致：列表态不返回 description，详情走 GET /api/team/agent
-    agents.push_back(trimTeamAgent(agent));
+  json channels = json::array();
+  {
+    std::lock_guard<std::mutex> lk(teamMu_);
+    for (const auto& agent : jval(demoTeam_, "agents", json::array())) {
+      const std::string id = jstr(agent, "id");
+      presence.push_back({{"agentId", id}, {"availability", id == "demo-agent-sec" ? "offline" : "active"}});
+      // 与真实路径一致：列表态不返回 description，详情走 GET /api/team/agent
+      agents.push_back(trimTeamAgent(agent));
+    }
+    channels = jval(demoTeam_, "channels", json::array());
   }
+  {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    teamChannelIds_.clear();
+    for (const auto& item : channels) {
+      const std::string id = jstr(item, "id");
+      if (id.empty()) continue;
+      teamChannelIds_.push_back(id);
+      json unread = jval(item, "unreadByUser", 0);
+      teamCliUnread_[id] = unread.is_number() ? unread.get<int>() : 0;
+    }
+  }
+
+  json list = json::array();
+  for (const auto& item : channels) {
+    json channel = trimTeamChannel(item);
+    json unread = jval(item, "unreadByUser", 0);
+    channel["unreadByUser"] = teamUnreadCount(jstr(item, "id"), unread.is_number() ? unread.get<int>() : 0);
+    list.push_back(channel);
+  }
+
   return json{{"enabled", true},
               {"canCreate", true},
               {"canManage", true},
+              {"canRead", true},
               {"orchestrationEnabled", false},
               {"channelMaxMembers", 12},
               {"defaultAgentId", "demo-agent-default"},
               {"agents", agents},
-              {"channels", jval(demoTeam_, "channels", json::array())},
+              {"channels", list},
               {"presence", presence}};
 }
 
@@ -1796,11 +2054,29 @@ json Backend::demoTeamMessages(const std::string& channelId) {
   return json{{"messages", list}, {"hasMore", false}, {"before", ""}};
 }
 
-json Backend::demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions) {
+json Backend::demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions,
+                           const std::string& replyTo) {
   demoTeamFlush();
   const int64_t now = nowMs();
   const std::string localId = "demo-local-" + std::to_string(now);
   json message = teamLocalMessage(text, mentions, localId);
+  if (!replyTo.empty()) {
+    // 与真实接口一致：引用目标不存在就不带 replyTo
+    bool found = false;
+    {
+      std::lock_guard<std::mutex> lk(teamMu_);
+      json messages = jval(demoTeam_, "messages", json::object());
+      if (messages.contains(channelId) && messages[channelId].is_array()) {
+        for (const auto& item : messages[channelId]) {
+          if (jstr(item, "id") == replyTo) {
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+    if (found) message["replyTo"] = replyTo;
+  }
 
   // 频道成员顺序决定谁先接、谁接第二棒；@ 谁就从谁开始
   json channel = json::object();
@@ -2070,6 +2346,49 @@ void Backend::handleTeamState(const httplib::Request&, httplib::Response& res) {
   res.set_content(dumpJson(out), "application/json; charset=utf-8");
 }
 
+// 侧栏红点用的轻量轮询：只回 {id, unread}，不重发 agents/channels 全量。
+// 每次调用顺带做一次增量扫描（1.2s 内不重复）。
+void Backend::handleTeamUnread(const httplib::Request&, httplib::Response& res) {
+  if (!demo_ && (!host_ || !host_->ready())) {
+    res.set_content(dumpJson(json{{"enabled", false}, {"channels", json::array()}, {"total", 0}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  refreshTeamUnread();
+  std::vector<std::string> ids;
+  std::map<std::string, int> cli;
+  {
+    std::lock_guard<std::mutex> lk(teamUnreadMu_);
+    ids = teamChannelIds_;
+    cli = teamCliUnread_;
+  }
+  json channels = json::array();
+  int total = 0;
+  for (const auto& id : ids) {
+    const int unread = teamUnreadCount(id, cli[id]);
+    total += unread;
+    channels.push_back({{"id", id}, {"unread", unread}});
+  }
+  res.set_header("Cache-Control", "no-store");
+  res.set_content(dumpJson(json{{"enabled", true}, {"channels", channels}, {"total", total}}),
+                  "application/json; charset=utf-8");
+}
+
+// 打开频道 / 滚到底 / 点击「N 条新消息」时上报：本地游标推进到最新，并尽力清零 CLI 的 unreadByUser。
+void Backend::handleTeamRead(const httplib::Request& req, httplib::Response& res) {
+  json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) body = json::object();
+  const std::string channelId = jstr(body, "channelId");
+  if (!teamIdOk(channelId)) {
+    res.status = 400;
+    res.set_content(dumpJson(json{{"ok", false}, {"error", "缺少合法的 channelId"}}),
+                    "application/json; charset=utf-8");
+    return;
+  }
+  teamMarkRead(channelId);
+  res.set_content(dumpJson(json{{"ok", true}, {"unread", 0}}), "application/json; charset=utf-8");
+}
+
 // 建频道：CLI 的 POST /channels 只认 {name, memberAgentIds}；组长是建好后单独 PATCH。
 // 所以这里先建、再可选设组长，组长失败不回滚频道，只回 warning。
 void Backend::handleTeamCreate(const httplib::Request& req, httplib::Response& res) {
@@ -2221,17 +2540,22 @@ void Backend::handleTeamSend(const httplib::Request& req, httplib::Response& res
   for (const auto& id : mentions) {
     if (id.is_string() && teamIdOk(id.get<std::string>())) clean.push_back(id);
   }
+  // 引用：CLI 的 replyTo 就是原消息 id（也接受唯一前缀，壳只传完整 id）
+  const std::string replyToRaw = jstr(body, "replyTo");
+  const std::string replyTo = teamIdOk(replyToRaw) ? replyToRaw : "";
 
   if (demo_) {
-    json message = demoTeamSend(channelId, text, clean);
+    json message = demoTeamSend(channelId, text, clean, replyTo);
     res.set_content(dumpJson(json{{"ok", true}, {"message", trimTeamMessage(message)}}),
                     "application/json; charset=utf-8");
     return;
   }
 
   // 实测写操作无幂等键：超时按「已发送、回复稍后到」处理，绝不重试（会重复发消息）
+  json reqBody = {{"text", text}, {"mentionAgentIds", clean}};
+  if (!replyTo.empty()) reqBody["replyTo"] = replyTo;
   json resp = agentSend("POST", "/api/v1/agent-home/channels/" + channelId + "/messages",
-                        json{{"text", text}, {"mentionAgentIds", clean}}, 15);
+                        reqBody, 15);
   const int status = resp.value("status", 0);
   const int64_t now = nowMs();
   if (status == 0) {
@@ -2244,6 +2568,7 @@ void Backend::handleTeamSend(const httplib::Request& req, httplib::Response& res
       return;
     }
     json local = teamLocalMessage(text, clean, "local-" + std::to_string(now));
+    if (!replyTo.empty()) local["replyTo"] = replyTo;
     res.set_content(dumpJson(json{{"ok", true},
                                   {"pending", true},
                                   {"message", local},
@@ -2263,9 +2588,14 @@ void Backend::handleTeamSend(const httplib::Request& req, httplib::Response& res
   if (!message.is_object() || jstr(message, "id").empty()) message = jval(doc, "message", json::object());
   if (!message.is_object() || jstr(message, "id").empty()) {
     message = teamLocalMessage(text, clean, "local-" + std::to_string(now));
+    if (!replyTo.empty()) message["replyTo"] = replyTo;
   }
-  res.set_content(dumpJson(json{{"ok", true}, {"message", trimTeamMessage(message)}}),
-                  "application/json; charset=utf-8");
+  json out = {{"ok", true}, {"message", trimTeamMessage(message)}};
+  // 原消息不在本频道时 CLI 会丢掉 replyTo 但照常落消息；如实告诉用户，别假装引用成功
+  if (data.value("replyToDropped", false) || doc.value("replyToDropped", false)) {
+    out["warning"] = "原消息不在本频道，已按普通消息发送";
+  }
+  res.set_content(dumpJson(out), "application/json; charset=utf-8");
 }
 
 void Backend::handleTeamEvents(const httplib::Request& req, httplib::Response& res) {
@@ -5167,28 +5497,14 @@ void Backend::handleUiStateSet(const httplib::Request& req, httplib::Response& r
     return;
   }
 
-  json doc = readJsonFile(uiStatePath());
-  if (!doc.is_object()) doc = json::object();
-  for (const char* key : {"activeSessionId", "activeChannelId", "chat", "workbench"}) {
-    if (body.contains(key)) doc[key] = body[key];
-  }
-  doc["updatedAt"] = nowMs();
-
-  const std::string path = uiStatePath();
-  const std::string tmp = path + ".tmp";
-  HANDLE mtx = CreateMutexA(nullptr, FALSE, "Local\\WorkBuddyLiteUiState");
-  if (mtx) WaitForSingleObject(mtx, 5000);
-  bool ok = false;
-  std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-  if (out) {
-    out << dumpJson(doc);
-    out.close();
-    ok = MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
-  }
-  if (mtx) {
-    ReleaseMutex(mtx);
-    CloseHandle(mtx);
-  }
+  // 读改写放进同一把命名互斥量：未读游标（teamRead）也写在同一个文件里，
+  // 两边各读一遍再各写一遍会互相覆盖。
+  mutateUiStateDoc([&](json& doc) {
+    for (const char* key : {"activeSessionId", "activeChannelId", "chat", "workbench"}) {
+      if (body.contains(key)) doc[key] = body[key];
+    }
+  });
+  bool ok = true;
 
   // activeSessionId 同时写回 sessions.json 的 lastSessionId，bootstrap 直接就能用
   if (body.contains("activeSessionId") && body["activeSessionId"].is_string()) {
@@ -5865,6 +6181,8 @@ void Backend::setupRoutes() {
   srv_.Get("/api/events", [this](const auto& r, auto& s) { handleStream(r, s); });
   // 群聊 bot：全部是毫秒级 HTTP 代理，不走 job；events 是长轮询，只回增量消息
   srv_.Get("/api/team/state", [this](const auto& r, auto& s) { handleTeamState(r, s); });
+  srv_.Get("/api/team/unread", [this](const auto& r, auto& s) { handleTeamUnread(r, s); });
+  srv_.Post("/api/team/read", [this](const auto& r, auto& s) { handleTeamRead(r, s); });
   srv_.Post("/api/team/channel", [this](const auto& r, auto& s) { handleTeamCreate(r, s); });
   srv_.Get("/api/team/messages", [this](const auto& r, auto& s) { handleTeamMessages(r, s); });
   srv_.Post("/api/team/send", [this](const auto& r, auto& s) { handleTeamSend(r, s); });

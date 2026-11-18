@@ -52,6 +52,8 @@ export function TeamSection() {
           )}
           {channels.map((channel) => {
             const active = channel.id === activeChannelId
+            // 打开中的频道一律不显示红点：进入即已读，浮条负责提示频道内的新消息
+            const unread = active ? 0 : channel.unreadByUser
             const lead = agents.find((agent) => agent.id === channel.leadAgentId)
             const members = agentsOfChannel(channel, agents)
             const avatarAgent = members.find((agent) => agent.id === channel.leadAgentId) || members[0]
@@ -103,13 +105,13 @@ export function TeamSection() {
                         用户编排
                       </span>
                     )}
-                    {channel.unreadByUser > 0 && (
+                    {unread > 0 && (
                       <span
                         className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-ink-3"
-                        title={`${channel.unreadByUser} 条未读`}
+                        title={`${unread} 条未读`}
                       >
                         <span className="size-1.5 rounded-full bg-primary" />
-                        {channel.unreadByUser}
+                        {unread > 99 ? '99+' : unread}
                       </span>
                     )}
                   </span>

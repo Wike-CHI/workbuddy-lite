@@ -109,10 +109,16 @@ class Backend {
   json teamPageFromCli(const std::string& channelId, const std::string& before,
                        const std::string& after, json& page);
   void teamSeedCursor(const std::string& channelId, const std::string& after, bool reset);
+  // 未读：CLI 只会「设置/清零」unreadByUser，不会自增；计数放在壳里，游标持久化到 ui-state.json
+  int teamUnreadCount(const std::string& channelId, int cliUnread);
+  void loadTeamReadCursors();
+  void refreshTeamUnread();
+  void teamMarkRead(const std::string& channelId);
   void initDemoTeam();
   json demoTeamState();
   json demoTeamMessages(const std::string& channelId);
-  json demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions);
+  json demoTeamSend(const std::string& channelId, const std::string& text, const json& mentions,
+                    const std::string& replyTo);
   json demoTeamCreateChannel(const std::string& name, const json& members, const std::string& leadId);
   json demoTeamUpdateMembers(const std::string& channelId, const json& members, std::string& error);
   json demoTeamUpdateLead(const std::string& channelId, const std::string& leadId, std::string& error);
@@ -123,6 +129,8 @@ class Backend {
   json demoTeamUpdateAgent(const std::string& id, const json& patch, std::string& error);
   void demoTeamFlush();
   void handleTeamState(const httplib::Request&, httplib::Response&);
+  void handleTeamUnread(const httplib::Request&, httplib::Response&);
+  void handleTeamRead(const httplib::Request&, httplib::Response&);
   void handleTeamCreate(const httplib::Request&, httplib::Response&);
   void handleTeamMessages(const httplib::Request&, httplib::Response&);
   void handleTeamSend(const httplib::Request&, httplib::Response&);
@@ -284,6 +292,23 @@ class Backend {
   std::mutex teamMu_;
   std::map<std::string, TeamWatch> teamWatches_;
   json demoTeam_ = json::object();
+
+  // 未读游标：readAt 之前视为已读；pending 只存 id/at，不复制消息正文。
+  // 首次扫描用整页历史回填（离线期间的新消息因此不会丢），之后只走 after 增量。
+  struct TeamUnread {
+    bool inited = false;
+    bool hasCursor = false;
+    std::string after;
+    int64_t readAt = 0;
+    int64_t lastMessageAt = 0;
+    std::deque<json> pending;
+  };
+  std::mutex teamUnreadMu_;
+  std::map<std::string, TeamUnread> teamUnreads_;
+  std::map<std::string, int> teamCliUnread_;
+  std::vector<std::string> teamChannelIds_;
+  int64_t teamUnreadScannedAt_ = 0;
+  bool teamReadLoaded_ = false;
 
   std::function<std::string(const std::string&)> browserEval_;
   std::function<void(const std::string&)> browserNavigate_;

@@ -46,6 +46,8 @@ export function ChannelComposer({ channel }: { channel: TeamChannel }) {
   const sending = useTeamStore((s) => s.sending)
   const pendingMentions = useTeamStore((s) => s.pendingMentions)
   const mentionSignal = useTeamStore((s) => s.mentionSignal)
+  const replyTarget = useTeamStore((s) => s.replyTarget)
+  const clearReplyTarget = useTeamStore((s) => s.clearReplyTarget)
   const orchestrationEnabled = useTeamStore((s) => s.orchestrationEnabled)
   const send = useTeamStore((s) => s.send)
   const addMention = useTeamStore((s) => s.addMention)
@@ -365,6 +367,27 @@ export function ChannelComposer({ channel }: { channel: TeamChannel }) {
               <Plus className="size-4" />
             </button>
             <div className="min-w-0 flex-1">
+              {replyTarget && (
+                <div className="mb-1.5 flex items-start gap-1.5 rounded-[4px] border-l-2 border-border bg-surface-2/70 px-2 py-1 text-[10.5px] leading-4 text-ink-3">
+                  <span className="shrink-0 font-medium text-ink-2">
+                    引用{' '}
+                    {replyTarget.from === 'user'
+                      ? '我'
+                      : membersById.get(replyTarget.agentId || '')?.name || '成员'}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {replyTarget.text.replace(/\s+/g, ' ').trim()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearReplyTarget}
+                    title="取消引用"
+                    className="shrink-0 text-ink-4 transition-colors hover:text-ink-2"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              )}
               {resolvedMentions.length > 0 && (
                 <div className="mb-1.5 flex flex-wrap gap-1.5">
                   {resolvedMentions.map((chip) => (

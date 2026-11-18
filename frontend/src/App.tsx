@@ -129,6 +129,13 @@ export default function App() {
       openChannel: (id: string) => useTeamStore.getState().openChannel(id),
       teamSend: (text: string) => useTeamStore.getState().send(text),
       mention: (agentId: string) => useTeamStore.getState().requestMentionPanel(agentId),
+      // v2 第二波验收钩子：引用/跳转/上报已读
+      quote: (messageId: string) => {
+        const message = useTeamStore.getState().messages.find((item) => item.id === messageId)
+        if (message) useTeamStore.getState().quoteMessage(message)
+      },
+      jump: (messageId: string) => useTeamStore.getState().requestJump(messageId),
+      markRead: () => useTeamStore.getState().markRead(),
       // v2 验收钩子：成员面板 / bot 详情编辑 / 添加成员多选
       openMembers: () => useTeamStore.getState().openMembers(),
       editAgent: (agentId: string) => useTeamStore.getState().openAgentDetail(agentId),

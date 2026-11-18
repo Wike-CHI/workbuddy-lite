@@ -831,3 +831,66 @@ bot：
 - **并发编辑**：壳会带 `expectedRevision`，预期能拿到 409 并提示重试；本轮没有和网页端同时操作验证过。
 - **不支持的编辑**：详情页不改 model/permissionMode/homeCwd/avatar；不做删除 bot；不编辑 `systemPrompt` 的 append/replace；不做任务板。
 - **demo 的 revision 是模拟值**：只用于前端合并，不与真实服务端语义完全等价。
+
+---
+
+## 12. v2 第二波：未读持久化 + 消息引用/跳转（2026-11-18）
+
+### 12.1 CLI 能力复核（源码级 + 404 探针，未写真实频道）
+
+| 能力 | 结论 | 证据 |
+|---|---|---|
+| 未读**写** | **支持**：`PATCH /api/v1/agent-home/channels/{id}`，body `{unreadByUser: number, unreadIf?: number}` | `applyUnreadPatch()`；`unreadIf` 是 CAS 保护：只有当前值等于它时才清零 |
+| 未读**自增** | **不支持**：`--serve` 路径从不自增 | `bumpUnread()` 在两个 bundle 里都只有定义、无调用；web-ui 也只调 `clearChannel*Unreads` 清零 |
+| 消息引用字段 | **支持**：消息模型有 `replyTo`，是原消息 id | `channels/*.jsonl` 文档字段；真实 218 条历史里暂未出现（用户还没用过） |
+| 发送时带引用 | **支持**：`POST /channels/{id}/messages` body `{text, mentionAgentIds?, replyTo?}` | `resolveReplyTarget()` 接受完整 id 或唯一前缀（可带 `#`）；解析不到返回 `replyToDropped:true`，消息照常落库 |
+| 路由探针 | `PATCH /channels/__probe__` 与 `POST /channels/__probe__/messages` 均 404 `CHANNEL_NOT_FOUND` | 只对不存在的 id 发请求，未写用户数据 |
+
+结论：**未读计数必须由壳计算**（CLI 只会被显式设置/清零）；**引用可以真做**，不需要自造一套只在本壳可见的标注。
+
+### 12.2 未读策略（本地游标 + CLI 镜像，不相加）
+
+读游标存在**现有** `ui-state.json` 的 `teamRead` 下，按 `channelId` 记录最后已读消息时间：
+
+```jsonc
+{ "teamRead": { "<channelId>": { "at": 1794961090000 } } }
+```
+
+- **未读数** = 游标之后、`from != "user"` 的消息数；**没有游标时**（首次升级/首次运行）沿用 CLI 的 `unreadByUser` 作为迁移初值。两种来源**取其一，绝不相加**，否则侧栏会出现 41+3 这类双倍数字。
+- **扫描**：前端每 4s 调 `GET /api/team/unread`，后端顺带做增量扫描——首次读整页（最多 218 条）回填离线期间的新消息，之后只走 `messages/page?after=`；单频道 pending 上限 500 条。
+- **清零时机**：打开频道、滚到底、窗口重新获得焦点且停在底部、点击「N 条新消息」、离开频道。全部走 `POST /api/team/read`，推进游标并落盘。
+- **回写 CLI**：仅在缓存的 `unreadByUser > 0` 时发一次 `PATCH {unreadByUser:0}`，让网页端/桌面端不再看到过期红点；失败不影响本地游标。
+- **界面**：打开中的频道侧栏不显示红点；不在底部或窗口失焦时，新消息累计到「N 条新消息 ↓」浮条，点击瞬时滚到底并清零；向上翻页保持滚动位置，靠近顶部自动续页，另有「回到最新」。
+- 已知上限：单次启动回填只读一页（218 条），若离线未读超过一页，数字按一页封顶；CLI 的 `unreadByUser` 不参与增量计算。
+
+### 12.3 引用与跳转
+
+- 发送：消息行 hover 出现引用按钮 → 输入区显示「引用 作者：正文」条 → `send` 带 `replyTo`；失败时引用目标随文字一起保留。
+- 渲染：气泡上方显示引用块（左侧竖线 + 作者 + 单行截断正文）；目标不在当前分页时显示「原消息不在当前视图」，不可点。
+- 跳转：点击引用块 → 若目标未加载，自动 `loadMore()` 最多 5 页 → `scrollIntoView({block:'center'})` → 气泡加 1.8s 描边高亮。
+- 不做（本轮）：编辑、撤回、固定、附件；引用只在真实 `replyTo` 上实现，不伪造本地标注。
+
+### 12.4 接口
+
+| 方法 | 路径 | 入参 | 返回 |
+|---|---|---|---|
+| GET | `/api/team/unread` | – | `{enabled, channels:[{id, unread}], total}` |
+| POST | `/api/team/read` | `{channelId}` | `{ok, unread:0}` |
+| POST | `/api/team/send` | 新增 `replyTo?: string` | `{ok, message:{…, replyTo?}, warning?}` |
+
+`GET /api/team/state` 新增 `canRead: true`；旧 exe 没有该字段时前端只做本地清零，不调用 `/api/team/read`。
+
+### 12.5 验证（demo，未写真实频道）
+
+- `frontend npm run build` 通过；`bin/workbuddy-lite.verify.exe` 编译通过；新改文件 `oxlint` 0 warning。
+- HTTP 级：demo-1 初始 `unread=3` → `/api/team/read` 后 0；同数据目录重启仍 0；连发两条（每条触发 3 条 demo 回复）后 `unread=6`；带合法 `replyTo` 的消息原样返回，非法 id 被丢弃。
+- 截图（`bin/visual/`）：`v2-unread-sidebar.png`（侧栏 3）、`v2-unread-channel.png`（引用块 + 红点已清）、`v2-unread-float.png`（滚上去后 3 条新消息）、`v2-unread-blur.png`（窗口失焦时也计入未读）、`v2-unread-jump.png`（跳转高亮）、`v2-unread-latest.png`（点击浮条回到底部）、`v2-unread-dark.png`（深色引用块）、`v2-unread-market.png`。
+- 回归：`bin/visual/regression-v2b/{chat,workbench,empty}.png`。
+
+### 12.6 风险
+
+- **CLI 不自增未读**：如果用户同时开着网页端，网页端不会把「新消息」写进 `unreadByUser`，两边数字可能不同；壳以本地游标为准。
+- **回写是尽力而为**：`PATCH` 失败只影响其他客户端的红点，不影响壳；没有重试。
+- **首次回填只读一页**：离线未读超过 218 条时，数字按一页封顶（不会错乱，只会偏小）。
+- **引用目标可能已被撤回/删除**：渲染为「原消息不在当前视图」，不阻塞发送。
+- **demo 时间锚定到当天零点**：同一自然日内重启不会冲掉已读；跨天后 demo 消息整体前移一天，会重新出现未读（仅影响 demo）。
