@@ -1255,7 +1255,7 @@ bool Backend::ensureModelCatalog(std::string& err) {
   if (!info.is_object() || info.empty()) {
     if (!ensureAgent(err)) return false;
     try {
-      info = client_->newSessionInfo(cwd);
+      info = client_->newSessionInfo(cwd, teamMcpServers());
     } catch (const std::exception& e) {
       err = e.what();
       return false;
@@ -1408,6 +1408,20 @@ json Backend::agentSend(const std::string& method, const std::string& path, cons
   } catch (const std::exception& e) {
     return json{{"status", 0}, {"error", e.what()}};
   }
+}
+
+json Backend::teamMcpServers() const {
+  // 只给普通聊天会话注入；demo 没有 agent，返回空数组。
+  // ACP 的 stdio server 不能带 "type" 字段：CLI 的 convertAcpMcpServersToDynamic
+  // 见到 type 只认 http/sse，其余会被直接跳过，所以这里只写 name/command/args/env。
+  if (demo_ || exePath_.empty() || port_ <= 0) return json::array();
+  json env = json::array();
+  env.push_back({{"name", "WBL_TEAM_PORT"}, {"value", std::to_string(port_)}});
+  env.push_back({{"name", "WBL_TEAM_DATA"}, {"value", localAppDir()}});
+  return json::array({{{"name", "team"},
+                       {"command", exePath_},
+                       {"args", json::array({"--mcp-team"})},
+                       {"env", env}}});
 }
 
 namespace {
@@ -2437,6 +2451,16 @@ void Backend::handleTeamCreate(const httplib::Request& req, httplib::Response& r
     return fail("默认分身不能加入频道，请换一个成员");
   }
   if (members.size() < 2) return fail("频道至少需要两个智能体");
+
+  // 不在名册里的 id 会被 CLI 静默剔除，结果可能是「建好了但只剩 1 人」；
+  // 与 /channel/members 用同一句提示，前端和 MCP 工具都走这里
+  std::vector<std::string> roster;
+  for (const auto& agent : jval(state, "agents", json::array())) roster.push_back(jstr(agent, "id"));
+  for (const auto& id : seen) {
+    if (std::find(roster.begin(), roster.end(), id) == roster.end()) {
+      return fail("成员必须在智能体名册里，请刷新后重试");
+    }
+  }
 
   json maxValue = jval(state, "channelMaxMembers");
   const int maxMembers = maxValue.is_number() ? maxValue.get<int>() : 12;
@@ -3653,7 +3677,7 @@ std::string Backend::acpSessionFor(const std::string& uiId, std::string& err) {
     // 重放事件此时还没有 uiId，会被 onUpdate 直接丢掉，不会重复灌进界面。
     if (!storedAcp.empty()) {
       try {
-        info = client_->loadSession(storedAcp, cwd);
+        info = client_->loadSession(storedAcp, cwd, teamMcpServers());
         if (!info.is_object()) info = json::object();
         if (info.empty()) info = json{{"sessionId", storedAcp}};
       } catch (const std::exception& e) {
@@ -3663,7 +3687,7 @@ std::string Backend::acpSessionFor(const std::string& uiId, std::string& err) {
     }
     if (info.empty()) {
       info = takeSpareSession(cwd);
-      if (!info.is_object() || info.empty()) info = client_->newSessionInfo(cwd);
+      if (!info.is_object() || info.empty()) info = client_->newSessionInfo(cwd, teamMcpServers());
     }
   } catch (const std::exception& e) {
     err = e.what();

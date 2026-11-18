@@ -82,6 +82,9 @@ class Backend {
   // method 只支持 GET/POST/PATCH；timeoutSec 是读超时（写操作 15s，避免落消息后长时间挂住）。
   json agentSend(const std::string& method, const std::string& path, const json& body,
                  int timeoutSec = 10);
+  // 普通会话注入的团队 MCP server：本 exe 的 --mcp-team 模式 + 本地服务端口/数据目录。
+  // demo 或 exe 路径未知时返回空数组（不影响用户在 mcp.json 里的既有配置）。
+  json teamMcpServers() const;
   // agent 的 stats / recents 很慢（0.5–1.2s），缓存 + 后台刷新，别卡住 HTTP 线程
   json cliStats();
   json agentRecents();

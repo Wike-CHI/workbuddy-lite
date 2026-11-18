@@ -30,11 +30,12 @@ class AcpClient {
   void reply(int64_t id, const json& result);
   void notify(const std::string& method, const json& params);
 
-  std::string newSession(const std::string& cwd);
+  std::string newSession(const std::string& cwd, const json& mcpServers = json::array());
   // session/new 的完整结果里有 models/configOptions，模型目录从这里取
-  json newSessionInfo(const std::string& cwd);
+  json newSessionInfo(const std::string& cwd, const json& mcpServers = json::array());
   // 返回 session/load 的完整结果（含 models/configOptions），调用方要吸收配置
-  json loadSession(const std::string& sessionId, const std::string& cwd);
+  json loadSession(const std::string& sessionId, const std::string& cwd,
+                   const json& mcpServers = json::array());
   // value 支持 string / bool；boolean 类型的配置项必须带 type=boolean
   json setConfigOption(const std::string& sessionId, const std::string& configId,
                        const json& value, const std::string& type = "");

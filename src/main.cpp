@@ -29,6 +29,7 @@
 #include "WebView2.h"
 #include "backend.h"
 #include "chrome_cookies.h"
+#include "mcp_team.h"
 
 #pragma comment(lib, "WebView2LoaderStatic.lib")
 #pragma comment(lib, "gdiplus.lib")
@@ -909,6 +910,10 @@ void capturePreview(ICoreWebView2* webview, const std::string& outPath, HWND hwn
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
+  // 隐藏模式：作为 codebuddy CLI 的 stdio MCP server 运行，不初始化窗口/WebView。
+  // 必须在 SetProcessDpiAwarenessContext 之前分流，避免把 GUI 初始化带进子进程。
+  if (hasFlag("--mcp-team")) return wbl::runTeamMcpServer();
+
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   SetCurrentProcessExplicitAppUserModelID(L"WorkBuddy.Lite");
   {

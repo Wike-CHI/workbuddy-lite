@@ -206,17 +206,24 @@ void AcpClient::notify(const std::string& method, const json& params) {
   cli.Post("/api/v1/acp", buildHeaders(), body.dump(), "application/json");
 }
 
-json AcpClient::newSessionInfo(const std::string& cwd) {
-  return request("session/new", {{"cwd", cwd}, {"mcpServers", json::array()}}, 180);
+json AcpClient::newSessionInfo(const std::string& cwd, const json& mcpServers) {
+  return request("session/new",
+                 {{"cwd", cwd},
+                  {"mcpServers", mcpServers.is_array() ? mcpServers : json::array()}},
+                 180);
 }
 
-std::string AcpClient::newSession(const std::string& cwd) {
-  return jstr(newSessionInfo(cwd), "sessionId");
+std::string AcpClient::newSession(const std::string& cwd, const json& mcpServers) {
+  return jstr(newSessionInfo(cwd, mcpServers), "sessionId");
 }
 
-json AcpClient::loadSession(const std::string& sessionId, const std::string& cwd) {
+json AcpClient::loadSession(const std::string& sessionId, const std::string& cwd,
+                            const json& mcpServers) {
   return request("session/load",
-                 {{"sessionId", sessionId}, {"cwd", cwd}, {"mcpServers", json::array()}}, 180);
+                 {{"sessionId", sessionId},
+                  {"cwd", cwd},
+                  {"mcpServers", mcpServers.is_array() ? mcpServers : json::array()}},
+                 180);
 }
 
 json AcpClient::setConfigOption(const std::string& sessionId, const std::string& configId,

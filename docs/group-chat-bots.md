@@ -894,3 +894,86 @@ bot：
 - **首次回填只读一页**：离线未读超过 218 条时，数字按一页封顶（不会错乱，只会偏小）。
 - **引用目标可能已被撤回/删除**：渲染为「原消息不在当前视图」，不阻塞发送。
 - **demo 时间锚定到当天零点**：同一自然日内重启不会冲掉已读；跨天后 demo 消息整体前移一天，会重新出现未读（仅影响 demo）。
+
+---
+
+## 13. 团队工具（MCP）（2026-11-18）
+
+把频道 / 成员 / 人设 / 发消息暴露成 MCP 工具，让 agent 在普通聊天里用一句话完成团队操作。
+工具只做「翻译 + 参数校验」，业务校验全部落到既有 `/api/team/*`，没有第二套逻辑。
+
+### 13.1 接入方式（per-session，不改全局 mcp.json）
+
+- `src/mcp_team.cpp` 实现 stdio MCP server，入口是 `workbuddy-lite.exe --mcp-team`。
+  这个开关在 `wWinMain` 第一行分流，早于 DPI / GDI+ / WebView 初始化，所以子进程不会弹窗。
+- `Backend::teamMcpServers()` 在 `session/new` 和 `session/load` 的 `mcpServers` 里注入：
+  本 exe + `--mcp-team`，env 带 `WBL_TEAM_PORT`（当前本地服务端口）与 `WBL_TEAM_DATA`（数据目录）。
+  **不写用户全局 `mcp.json`**，CLI 里手工开的会话不受影响；会话结束进程即退出。
+- 服务端条目只写 `name / command / args / env`，**不写 `type`**：CLI 的
+  `convertAcpMcpServersToDynamic` 见到 `type` 只认 http/sse，stdio 条目会被整条跳过。
+- 端口解析：`WBL_TEAM_PORT` 优先，其次读数据目录的 `port.txt`（壳启动时写，与 `localAppDir()` 同源）。
+  每次工具调用重新解析，壳重启换了端口也能跟上；找不到端口时工具返回可读错误而不是崩溃。
+- demo 会话、AI 整理临时会话不注入（前者没有 agent，后者只需要总结文本）。
+
+### 13.2 工具表（8 个）
+
+所有工具都在 stdout 上按「一行一帧 JSON-RPC」收发，诊断信息走 stderr（`[mcp-team] …`）。
+协议版本 `2024-11-05`；`initialize` 里带 `instructions`，说明「写操作会直接改用户数据，执行前先确认」。
+
+| 工具 | 参数 | 返回 | 副作用 |
+|---|---|---|---|
+| `team_list` | – | 文本：频道（id / 成员数 / 组长 / 最近一条）+ 名册（id / 角色） | 只读 |
+| `team_create_channel` | `name`, `memberAgentIds[]` | `{ok, channel}` | 建频道；≥2 人、≤上限、成员须在名册、排除默认分身 |
+| `team_add_members` | `channelId`, `agentIds[]` | `{ok, channel}` | 读现状 → 全量 PATCH，带 `expectedRevision`；已存在则「没有改动」 |
+| `team_remove_members` | `channelId`, `agentIds[]` | `{ok, channel}` | 同上；移出后 <2 人被拒 |
+| `team_set_lead` | `channelId`, `agentId \| null` | `{ok, channel}` | 设/撤组长；非成员被拒 |
+| `team_create_agent` | `name`, `title`, `description`, `model?` | `{ok, agent}` | 新建 bot；重名被拒 |
+| `team_update_agent_prompt` | `agentId`, `title?`, `description?` | `{ok, agent}` | 改角色/人设；至少一个字段，保存后对新回复生效 |
+| `team_send_message` | `channelId`, `text`, `mentionAgentIds?` | `{ok, message, warning?}` | 以用户身份落消息；@ 会唤醒成员并计费 |
+
+行为约定：
+
+- **执行失败用 `isError: true` 的文本结果**，不是 JSON-RPC error：模型能看到原因（「频道至少需要两个智能体」
+  「组长必须是频道成员」）并自行改正。只有「未知工具 / 参数不是对象」这类协议问题才回 `-32602`。
+- 成功时把 `/api/team/*` 的 JSON 原文放进 content，模型据此拿到新 `channelId` / `agentId`。
+- 超时：读 10s、写 20s、建频道 30s；`team_send_message` 遇到壳的「已发送但回复稍后到」时把 `warning` 一并回给模型。
+- 不做删除频道 / 删除 bot：底层没有对应接口，不在这里造。
+
+### 13.3 启用与关闭
+
+- **启用**：普通聊天会话自动带，无需配置，也没有前端开关（这一波只给 agent 用）。
+- **关闭**：per-session 注入 —— 关掉会话或退出应用，MCP 进程随 stdin 关闭退出，能力自然消失。
+  不写全局 `mcp.json`，所以不会污染 `codebuddy` 命令行会话。
+- **不希望暴露**：用 `--demo` 启动（demo 不注入），或直接不启动壳。
+- **手工接**（调试用）：`codebuddy -p "…" --mcp-config <cfg> --strict-mcp-config`，`cfg` 里
+  `{"mcpServers":{"team":{"command":"…/workbuddy-lite.exe","args":["--mcp-team"],"env":[…]}}}`。
+
+### 13.4 权限与风险
+
+- 工具代表**用户本人**读写团队数据，写操作没有二次确认；模型误判一句话就能建群、拉人、发消息。
+  提示词里已要求「写操作前先确认」，但这只是软约束。
+- `team_send_message` 带 `mentionAgentIds` 时，每个被叫成员都是一次完整 agent run，**会消耗额度**；
+  不传只落消息不唤醒。
+- 本地服务只监听 `127.0.0.1`，MCP server 本身无鉴权：能写它 stdin 的父进程（也就是 CLI）可以执行全部工具；
+  这也是 MCP stdio 的通用模型，不额外加 token。
+- 工具不做删除；改人设会影响该 bot 之后的所有回复，历史消息不变。
+
+### 13.5 验证（2026-11-18）
+
+- 编译：`build.bat` 的源文件列表已加 `src/mcp_team.cpp`；本轮因 `bin/workbuddy-lite.verify.exe`
+  被运行中的 demo 实例占用，改用同参数、不同输出名的产物验证编译，未覆盖也未结束任何用户进程。
+- **JSON-RPC（demo 数据目录）**：`initialize` → `tools/list` → `tools/call team_list` 通过；
+  8 个工具齐全，`team_list` 返回的频道 / 成员与 fixture 完全一致（`demo-1`、`demo-agent-review` 等）。
+  另跑 24 项断言：建频道 → 加成员 → 重复加人（无改动）→ 设组长 → 非成员当组长被拒 → 改人设（列表已生效）
+  → 新建 bot → 发消息（含 @）→ 移出成员 → 少于 2 人被拒 → 撤组长 → 缺参/空串/类型错误被拒 →
+  未知工具 `-32602` → 未知方法 `-32601`，全部通过；坏 JSON 回 `-32700` 后仍能继续处理后续帧。
+- **真实模型（ACP 路径，和壳内完全同一条）**：起一个独立 `codebuddy --serve`，`session/new` 带
+  `mcpServers` 注入本 exe，模型一轮内命中 `mcp__team__team_list`，回答里的 `demo-1` / `demo-2` /
+  成员名与 fixture 一致（不是编造）；`session/load` 带同样 `mcpServers` 恢复会话后工具仍在。
+- **真实模型写操作（仅 demo 数据）**：一句话「在 demo-c-… 发一条…」→ 模型调用
+  `mcp__team__team_send_message` → 返回 `{"ok":true,"message":{...}}`，随后 `GET /api/team/messages` 能读到该条。
+- **未验证**：真实（非 demo）团队数据上的写操作。按约定本轮不碰用户真实频道；MCP 侧的参数校验与壳路由
+  是同一套，但真实服务端的字段完整性、`expectedRevision` 冲突频率仍属「未验证」。
+- **本轮修的问题**：建频道原先只校验人数，不校验 id 是否在名册里；CLI 会静默剔除陌生 id，
+  可能「建成功但只剩 1 人」。已在 `handleTeamCreate` 补上与 `/channel/members` 相同的名册校验
+  （同一句提示「成员必须在智能体名册里，请刷新后重试」），MCP 与前端共用，不再各写一份。
