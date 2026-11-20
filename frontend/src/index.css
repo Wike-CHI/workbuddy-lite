@@ -60,6 +60,16 @@
   --shadow-pop: 0 8px 24px -12px rgb(20 20 30 / 0.18), 0 2px 6px -2px rgb(20 20 30 / 0.08);
   --composer-width: 720px;
 
+  /* 动效：四档时长 + 四条曲线，与 motion/ 工程的令牌表一致 */
+  --dur-instant: 90ms;   /* 悬停、按压、颜色 */
+  --dur-fast: 140ms;     /* 小展开、提示文字、状态点变色 */
+  --dur-base: 200ms;     /* 行插入、弹窗、toast */
+  --dur-slow: 320ms;     /* 面板开合、章节交叉 */
+  --mo-out: cubic-bezier(0.16, 1, 0.3, 1);    /* 进入、插入、展开 */
+  --mo-in: cubic-bezier(0.4, 0, 1, 1);        /* 关闭、移出 */
+  --mo-inout: cubic-bezier(0.65, 0, 0.35, 1); /* 面板开合、指示器位移 */
+  --mo-std: cubic-bezier(0.2, 0, 0, 1);       /* 悬停、按压、颜色 */
+
   color-scheme: light;
 }
 
@@ -136,6 +146,14 @@
   --radius-lg: 8px;
   --radius-xl: 12px;
 
+  /* 动效：ease-* 工具类与 transition 的默认值 */
+  --ease-out: var(--mo-out);
+  --ease-in: var(--mo-in);
+  --ease-inout: var(--mo-inout);
+  --ease-std: var(--mo-std);
+  --default-transition-duration: var(--dur-fast);
+  --default-transition-timing-function: var(--mo-out);
+
   --font-sans: 'Inter var', -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 }
@@ -194,6 +212,18 @@
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 1px;
+  }
+
+  /* 降级：不做位移与缩放，过渡压到 80ms，脉冲停在一帧上 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 80ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 

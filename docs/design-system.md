@@ -36,7 +36,7 @@
 - **Radius**：`sm 4 / md 6 / lg 8 / xl 12`。卡片统一 8px，composer 12px，按钮 6px。
 - **Type**：正文 13.5/1.75；UI 12.5；meta 10.5–11；mono 11–12.5。
 - **Elevation**：只有 popover/toast 用 `--shadow-pop`；主界面靠 hairline 与 surface 分层，没有卡片阴影。
-- **Motion**：hover/展开 120–160ms；脉冲点 2s；不做位移动画。
+- **Motion**：四档时长 90 / 140 / 200 / 320ms（`--dur-*`），四条曲线 `--mo-out / --mo-in / --mo-inout / --mo-std`（映射为 `ease-out` 等工具类）；`transition-*` 默认 140ms + expo-out；脉冲点 2s；位移 ≤ 8px；`prefers-reduced-motion` 下过渡压到 80ms、动画停一帧。
 
 ---
 

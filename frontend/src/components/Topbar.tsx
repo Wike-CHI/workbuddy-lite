@@ -79,7 +79,7 @@ export function Topbar() {
                     strokeLinecap="round"
                     strokeDasharray={circumference}
                     strokeDashoffset={circumference * (1 - ratio)}
-                    className="text-primary transition-[stroke-dashoffset] duration-300"
+                    className="text-primary transition-[stroke-dashoffset] duration-[var(--dur-slow)] ease-inout"
                   />
                 </svg>
                 <span>{fmtNum(contextUsed)}</span>

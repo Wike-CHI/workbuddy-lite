@@ -48,7 +48,7 @@ function ReasoningPart({ text, status }: ReasoningMessagePartProps) {
   return (
     <details open={running} className="group/reason border-l-2 border-border/70 pl-3">
       <summary className="flex cursor-pointer select-none items-center gap-1 text-[11px] text-ink-4 hover:text-ink-2">
-        <ChevronRight className="size-3 transition-transform group-open/reason:rotate-90" />
+        <ChevronRight className="size-3 transition-transform duration-[var(--dur-base)] ease-out group-open/reason:rotate-90" />
         {running ? '思考中…' : '思考过程'}
       </summary>
       <div className="mt-1 whitespace-pre-wrap text-[12px] leading-6 text-ink-3">{text}</div>

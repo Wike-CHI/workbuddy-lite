@@ -1,0 +1,309 @@
+<div class="mh" id="mh">
+  <div class="mh-prog" id="prog" style="position:absolute;left:0;top:0;height:2px;background:#c9c6ff;width:0;z-index:40"></div>
+
+  <div class="mh-hud">
+    <div class="hud-l">
+      <span class="hud-brand">WORKBUDDY LITE</span>
+      <span class="hud-sub">全流程动效规范 v1</span>
+    </div>
+    <div class="hud-r">
+      <span class="hud-idx" id="hudIdx">00 / 08</span>
+      <span class="hud-ch" id="hudCh">片头</span>
+      <span class="hud-spec" id="hudSpec"></span>
+    </div>
+  </div>
+
+  <div class="mh-win" id="win">
+    <div class="app" id="app">
+      <aside class="sb">
+        <div class="sb-brand" data-sb="0">
+          <div class="logo">W</div>
+          <div><div class="brand-t">WorkBuddy Lite</div><div class="brand-s">C++ · WebView2 · ACP</div></div>
+        </div>
+        <button class="sb-new" data-sb="1">＋&nbsp;&nbsp;新会话</button>
+        <div class="sb-list">
+          <div class="srow active" data-sb="2"><div class="s-title">把这次对话整理成一份文档</div><div class="s-time">刚刚</div></div>
+          <div class="srow" data-sb="3"><div class="s-title">前端动效走查</div><div class="s-time">12 分钟前</div></div>
+          <div class="srow" data-sb="4"><div class="s-title">插件市场分类筛选</div><div class="s-time">1 小时前</div></div>
+          <div class="srow" data-sb="5"><div class="s-title">工作流失败重跑</div><div class="s-time">昨天</div></div>
+          <div class="srow" data-sb="6"><div class="s-title">右栏面板宽度记忆</div><div class="s-time">11 月 17 日</div></div>
+        </div>
+        <div class="sb-foot" data-sb="7">
+          <div class="fstat"><i class="dot ok"></i>CodeBuddy 已就绪</div>
+          <div class="fmeta">deepseek-v4.1-flash · fullAccess</div>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="tb">
+          <div class="tb-l">
+            <div class="tb-t">把这次对话整理成一份文档</div>
+            <div class="tb-p">C:\Users\Administrator\WorkBuddy\2026-11-12-17-27-41\workbuddy-lite</div>
+          </div>
+          <div class="tb-r">
+            <span class="ctx-ring"></span><span class="ctx-n">34k</span>
+            <span class="mode">完全放行 ▾</span>
+            <span class="tb-btn" id="panelBtn" style="position:relative">
+              <span style="letter-spacing:-1px">▥</span>
+              <i id="panelRing" style="position:absolute;inset:-3px;border-radius:8px;border:2px solid var(--accent);opacity:0"></i>
+            </span>
+          </div>
+        </header>
+
+        <div class="body">
+          <section class="chat" id="chat">
+            <div class="empty" id="empty">
+              <div class="e-t">新会话</div>
+              <div class="e-s">描述你要它做的事，或者从下面开始</div>
+              <div class="e-cmds">
+                <div class="e-cmd" id="ec1"><b>整理这段对话</b> 输出一份文档<span>↵</span></div>
+                <div class="e-cmd" id="ec2"><b>解释当前改动</b> 只看 diff<span>↵</span></div>
+                <div class="e-cmd" id="ec3"><b>跑一次构建</b> 失败就地重跑<span>↵</span></div>
+              </div>
+            </div>
+
+            <div class="msgs" id="msgs">
+              <div class="msg user" id="mUser">
+                <div class="u-label">你</div>
+                <div class="u-block">把这次对话整理成一份文档</div>
+              </div>
+
+              <div class="msg asst" id="mAsst">
+                <div class="av">W</div>
+                <div class="asst-body">
+                  <div class="asst-name">WorkBuddy<span>16:42</span></div>
+                  <div class="reason" id="reason"><i class="chev">›</i>思考了 2.1s</div>
+                  <p class="prose" id="p1"><span class="tx"></span><i class="caret" id="c1"></i></p>
+                  <p class="prose" id="p2"><span class="tx"></span><i class="caret" id="c2"></i></p>
+                  <div class="prose" id="p3" style="margin-bottom:2px">本轮改动集中在三处：</div>
+                  <ul class="bullets">
+                    <li id="b1">时长收敛到 90 / 140 / 200 / 320ms 四档</li>
+                    <li id="b2">位移距离不超过 8px，不用弹跳</li>
+                    <li id="b3">运行中状态保留 2s 脉冲点</li>
+                  </ul>
+
+                  <div class="tools">
+                    <div class="trow" id="t1"><i class="dot run"></i><span class="tname">Read</span><span class="targ">src/components/Sidebar.tsx</span><span class="tmeta">1.2s</span></div>
+                    <div class="trow" id="t2"><i class="dot run"></i><span class="tname">Grep</span><span class="targ">"transition" in frontend/src</span><span class="tmeta">24 matches</span></div>
+                    <div class="trow" id="t3"><i class="dot run"></i><span class="tname">Edit</span><span class="targ">frontend/src/index.css</span><span class="tmeta">+12 −4</span></div>
+                    <div class="trow" id="t4"><i class="dot run"></i><span class="tname">Bash</span><span class="targ">npm run build</span><span class="tmeta">…</span></div>
+                    <div class="trow" id="t5"><i class="dot run"></i><span class="tname">Bash</span><span class="targ">npm run build</span><span class="tmeta">…</span></div>
+                  </div>
+
+                  <div class="diff" id="diff">
+                    <div class="diff-h"><span class="mono">frontend/src/index.css</span><b>+12</b><i>−4</i></div>
+                    <div class="diff-b" id="diffB">
+                      <div class="dline ctx"><span class="ln">118</span>.srow { border-radius: 8px; }</div>
+                      <div class="dline del"><span class="ln">119</span>- .srow { transition: all 300ms; }</div>
+                      <div class="dline add"><span class="ln">119</span>+ .srow { transition: background-color 90ms var(--ease-out); }</div>
+                      <div class="dline add"><span class="ln">120</span>+ .srow:hover { background: var(--surface-2); }</div>
+                      <div class="dline ctx"><span class="ln">121</span>.msg { display: flex; gap: 10px; }</div>
+                      <div class="dline add"><span class="ln">122</span>+ .msg { animation: rise 200ms var(--ease-out); }</div>
+                    </div>
+                  </div>
+
+                  <div class="plan" id="plan">
+                    <div class="plan-h">整理进度<em>2/3</em></div>
+                    <div class="prow" id="pr1"><i class="pbox done"></i>读取会话上下文</div>
+                    <div class="prow" id="pr2"><i class="pbox done"></i>汇总设计决策</div>
+                    <div class="prow" id="pr3"><i class="pbox"></i>写入 docx</div>
+                  </div>
+
+                  <div class="usage" id="usage">3.2k tokens · 4.1s · 12 次工具调用</div>
+                </div>
+              </div>
+
+              <div class="msg asst" id="typing">
+                <div class="av" style="background:var(--surface-3);color:var(--ink-3)">W</div>
+                <div class="asst-body">
+                  <div class="asst-name" style="color:var(--ink-3)">WorkBuddy<span>正在生成</span></div>
+                  <div class="tdots" style="display:flex;gap:4px;padding-top:6px">
+                    <i class="td" style="width:5px;height:5px;border-radius:50%;background:var(--ink-3);display:block"></i>
+                    <i class="td" style="width:5px;height:5px;border-radius:50%;background:var(--ink-3);display:block"></i>
+                    <i class="td" style="width:5px;height:5px;border-radius:50%;background:var(--ink-3);display:block"></i>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside class="rp" id="rp">
+            <div class="rp-in">
+              <div class="rp-tabs" id="rpTabs">
+                <span class="rtab" data-t="0">文件</span>
+                <span class="rtab" data-t="1">变更</span>
+                <span class="rtab" data-t="2">计划</span>
+                <span class="rtab" data-t="3">待办</span>
+                <span class="rtab" data-t="4">Git</span>
+                <span class="rtab active" data-t="5">任务</span>
+                <span class="rtab" data-t="6">浏览器</span>
+                <i class="rind" id="rind"></i>
+              </div>
+              <div class="rp-body" style="position:relative">
+                <div id="rpTasks">
+                  <div class="wf" id="wf">
+                    <div class="wf-h"><span class="wf-t">整理对话为文档</span><span class="wf-s" id="wfS">运行中</span></div>
+                    <div class="bar"><i id="barFill"></i></div>
+                    <div id="stages">
+                      <div class="stage" id="st1"><i class="dot ok"></i>读取会话上下文<span class="stage-t">0.8s</span></div>
+                      <div class="stage" id="st2"><i class="dot run"></i>汇总设计决策<span class="stage-t">1.4s</span></div>
+                      <div class="stage" id="st3"><i class="dot idle"></i>写入 docx<span class="stage-t">—</span></div>
+                    </div>
+                    <div class="wf-agents" id="agents">
+                      <div class="arow" id="ag1"><span class="aname">wbl-scout</span><span class="atk">3.2k</span></div>
+                      <div class="arow" id="ag2"><span class="aname">wbl-frontend</span><span class="atk">8.4k</span></div>
+                    </div>
+                  </div>
+                </div>
+                <div id="rpPlan" style="position:absolute;left:0;right:0;top:0;opacity:0">
+                  <div class="plan" style="margin:0">
+                    <div class="plan-h">本轮计划<em>3 步</em></div>
+                    <div class="prow"><i class="pbox done"></i>统一动效令牌</div>
+                    <div class="prow"><i class="pbox done"></i>会话区插入与展开</div>
+                    <div class="prow"><i class="pbox"></i>右栏与弹窗过渡</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <div class="cw">
+          <div class="composer" id="composer">
+            <div class="c-text" id="cText">描述你要它做的事，Enter 发送</div>
+            <div class="c-row">
+              <span class="chip mono">deepseek-v4.1-flash ▾</span>
+              <span class="chip">完全放行 ▾</span>
+              <span class="chip">＋</span>
+              <span class="c-spacer"></span>
+              <span class="send" id="send">↑</span>
+            </div>
+          </div>
+          <div class="c-hint" id="cHint">就绪 · Enter 发送 · Shift+Enter 换行</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="channel" id="channel" style="left:24px;top:88px;width:1872px;height:968px;border-radius:12px">
+    <div class="ch-h">
+      <span class="ch-t"># 前端实现</span>
+      <span class="ch-sub">3 位智能体 · 1 位成员</span>
+      <div class="avatars" id="avatars">
+        <span class="a" data-a="0" style="background:#e8e8fb;color:#3b3ba8">FE</span>
+        <span class="a" data-a="1" style="background:#e8f4ee;color:#16794c">VR</span>
+        <span class="a" data-a="2" style="background:#fbf3e2;color:#9a6700">BE</span>
+        <span class="a" data-a="3" style="background:#f4f4f1;color:#55555e">你</span>
+      </div>
+    </div>
+    <div class="ch-body" id="chBody" style="position:relative">
+      <div class="cmsg" id="c1">
+        <div class="cav" style="background:#5b5bd6">FE</div>
+        <div><div class="cn">wbl-frontend<span>16:40</span></div><div class="ct">动效令牌已经落到 index.css，四档时长都建好变量。</div></div>
+      </div>
+      <div class="cmsg" id="c2">
+        <div class="cav" style="background:#16794c">VR</div>
+        <div><div class="cn">wbl-verify<span>16:41</span></div><div class="ct">截图看过了，浅色下工具行展开没有跳位。</div></div>
+      </div>
+      <div class="cmsg" id="c3">
+        <div class="cav" style="background:#9a6700">BE</div>
+        <div><div class="cn">wbl-backend<span>16:41</span></div><div class="ct">面板宽度改成可拖动，最小 320。</div></div>
+      </div>
+      <div class="cmsg" id="c4">
+        <div class="cav" style="background:#16794c">VR</div>
+        <div>
+          <div class="cn">wbl-verify<span>16:43</span></div>
+          <div class="ct">第二轮验收通过，可以提交。</div>
+          <div class="reacts" id="reacts">
+            <span class="react" data-r="0">👍 3</span>
+            <span class="react" data-r="1">✅ 2</span>
+          </div>
+        </div>
+      </div>
+      <div class="live" id="live">
+        <div class="cav" style="background:#5b5bd6">FE</div>
+        <span>wbl-frontend 正在输入</span>
+        <span class="tdots" id="liveDots"><i></i><i></i><i></i></span>
+      </div>
+    </div>
+    <div class="cw" style="padding-top:0;padding-bottom:18px">
+      <div class="composer" id="chComposer" style="width:720px;padding-bottom:9px">
+        <div class="c-text ph" style="min-height:20px">发消息给 # 前端实现</div>
+        <div class="c-row"><span class="c-spacer"></span><span class="send" style="width:26px;height:26px;font-size:13px">↑</span></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="mh-dim" id="dim"></div>
+
+  <div class="mh-dlg" id="dlg">
+    <div class="dlg-h"><span>插件市场</span><span class="dlg-x">×</span></div>
+    <div class="chips" id="chips">
+      <span class="fchip on" id="fcAll">全部</span>
+      <span class="fchip" id="fcDev">dev</span>
+      <span class="fchip">data</span>
+      <span class="fchip">office</span>
+      <span class="fchip">design</span>
+      <span class="fchip">已安装</span>
+    </div>
+    <div class="plist" id="plist">
+      <div class="pitem" id="pi1"><span class="pico">M</span><div><div class="pname">local-mcp-bridge</div><div class="pdesc">本地 MCP 服务桥接</div></div><span class="pcat">dev</span><span class="pbtn" id="pb1">安装</span></div>
+      <div class="pitem" id="pi2"><span class="pico">C</span><div><div class="pname">chart-kit</div><div class="pdesc">图表组件与主题</div></div><span class="pcat">data</span><span class="pbtn">安装</span></div>
+      <div class="pitem" id="pi3"><span class="pico">D</span><div><div class="pname">docx-writer</div><div class="pdesc">Word 文档生成</div></div><span class="pcat">office</span><span class="pbtn on">已安装</span></div>
+      <div class="pitem" id="pi4"><span class="pico">T</span><div><div class="pname">design-tokens</div><div class="pdesc">令牌同步与导出</div></div><span class="pcat">design</span><span class="pbtn">安装</span></div>
+      <div class="pitem" id="pi5"><span class="pico">G</span><div><div class="pname">git-worktree</div><div class="pdesc">多工作树切换</div></div><span class="pcat">dev</span><span class="pbtn">安装</span></div>
+    </div>
+    <div class="dlg-f" id="dlgF">共 5 个插件 · 3 个已安装</div>
+  </div>
+
+  <div class="mh-toast" id="toast"><i class="dot" style="background:#4ac48a"></i>已安装 local-mcp-bridge</div>
+
+  <section class="board" id="boardMicro" style="background:#eceae5;opacity:0">
+    <div class="bd-h"><span class="bd-t">微交互</span><span class="bd-s">每一次接触都在 90–200ms 内给出回应</span></div>
+    <div class="grid" id="microGrid">
+      <div class="mcard" data-m="0"><div class="mcard-h"><span class="mc-t">悬停</span><span class="mc-v">90ms · out</span></div>
+        <div class="mc-demo"><div class="demo-row" id="dm0"><div class="s-title">前端动效走查</div><div class="s-time">12 分钟前</div></div></div></div>
+      <div class="mcard" data-m="1"><div class="mcard-h"><span class="mc-t">按下</span><span class="mc-v">90ms · scale .97</span></div>
+        <div class="mc-demo"><div class="demo-btn" id="dm1">发送</div></div></div>
+      <div class="mcard" data-m="2"><div class="mcard-h"><span class="mc-t">聚焦</span><span class="mc-v">120ms · ring 3px</span></div>
+        <div class="mc-demo"><div class="demo-field" id="dm2">描述你要它做的事</div></div></div>
+      <div class="mcard" data-m="3"><div class="mcard-h"><span class="mc-t">确认</span><span class="mc-v">180ms · 上浮 8px</span></div>
+        <div class="mc-demo"><div style="position:relative;width:220px;height:120px"><div class="demo-row" style="position:absolute;left:0;top:0">已复制到剪贴板</div><div id="dm3" style="position:absolute;left:0;top:44px;height:26px;border-radius:6px;background:var(--ink);color:#fff;font-size:11.5px;display:flex;align-items:center;gap:6px;padding:0 10px;opacity:0"><i class="dot ok" style="background:#4ac48a"></i>已复制</div></div></div></div>
+      <div class="mcard" data-m="4"><div class="mcard-h"><span class="mc-t">运行中</span><span class="mc-v">2s · 线性循环</span></div>
+        <div class="mc-demo"><div class="demo-dots" id="dm4"><i></i><i></i><i></i></div></div></div>
+      <div class="mcard" data-m="5"><div class="mcard-h"><span class="mc-t">展开</span><span class="mc-v">200ms · 高度</span></div>
+        <div class="mc-demo"><div style="width:220px"><div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><i class="chev" id="dm5c" style="transition:none">›</i>工具参数<span style="margin-left:auto;color:var(--ink-4);font-size:10.5px">3 项</span></div><div id="dm5" style="overflow:hidden;height:0;margin-top:6px;background:var(--surface-2);border-radius:6px;font-size:11.5px;color:var(--ink-2);padding:0 8px"><div style="padding:6px 0">path: src/index.css</div><div style="padding:0 0 6px">lines: 118–122</div></div></div></div></div>
+    </div>
+  </section>
+
+  <section class="board" id="boardTokens" style="background:#eceae5;opacity:0">
+    <div class="bd-h"><span class="bd-t">动效令牌</span><span class="bd-s">四档时长覆盖全部交互，缓动只有四条曲线</span></div>
+    <div class="tk-grid">
+      <div class="tk-col">
+        <h3>DURATION</h3>
+        <div class="tk-row"><span class="tk-name">instant · 颜色与按压</span><span class="tk-val" style="width:56px">90ms</span><span class="tk-bar"><i id="tb1"></i></span></div>
+        <div class="tk-row"><span class="tk-name">fast · 悬停与小展开</span><span class="tk-val" style="width:56px">140ms</span><span class="tk-bar"><i id="tb2"></i></span></div>
+        <div class="tk-row"><span class="tk-name">base · 行插入与弹窗</span><span class="tk-val" style="width:56px">200ms</span><span class="tk-bar"><i id="tb3"></i></span></div>
+        <div class="tk-row"><span class="tk-name">slow · 面板与转场</span><span class="tk-val" style="width:56px">320ms</span><span class="tk-bar"><i id="tb4"></i></span></div>
+        <div class="tk-row"><span class="tk-name">scene · 章节交叉</span><span class="tk-val" style="width:56px">480ms</span><span class="tk-bar"><i id="tb5"></i></span></div>
+        <div class="tk-note">位移上限 8px；面板开合走宽度，不做整屏位移。</div>
+      </div>
+      <div class="tk-col">
+        <h3>EASING</h3>
+        <div class="curve"><svg width="56" height="56" viewBox="0 0 60 60"><path d="M0 60 L60 60" stroke="#d7d6d0"/><path d="M0 60 L0 0" stroke="#d7d6d0"/><path id="cv1" d="" fill="none" stroke="#5b5bd6" stroke-width="2"/></svg><div><div class="cn2">expo-out</div><div class="cv2">cubic-bezier(.16,1,.3,1)</div></div><span class="cu">进入 · 插入 · 展开</span></div>
+        <div class="curve"><svg width="56" height="56" viewBox="0 0 60 60"><path d="M0 60 L60 60" stroke="#d7d6d0"/><path d="M0 60 L0 0" stroke="#d7d6d0"/><path id="cv2" d="" fill="none" stroke="#5b5bd6" stroke-width="2"/></svg><div><div class="cn2">exit</div><div class="cv2">cubic-bezier(.4,0,1,1)</div></div><span class="cu">关闭 · 移出</span></div>
+        <div class="curve"><svg width="56" height="56" viewBox="0 0 60 60"><path d="M0 60 L60 60" stroke="#d7d6d0"/><path d="M0 60 L0 0" stroke="#d7d6d0"/><path id="cv3" d="" fill="none" stroke="#5b5bd6" stroke-width="2"/></svg><div><div class="cn2">in-out</div><div class="cv2">cubic-bezier(.65,0,.35,1)</div></div><span class="cu">面板开合 · 指示器</span></div>
+        <div class="curve"><svg width="56" height="56" viewBox="0 0 60 60"><path d="M0 60 L60 60" stroke="#d7d6d0"/><path d="M0 60 L0 0" stroke="#d7d6d0"/><path id="cv4" d="" fill="none" stroke="#5b5bd6" stroke-width="2"/></svg><div><div class="cn2">standard</div><div class="cv2">cubic-bezier(.2,0,0,1)</div></div><span class="cu">悬停 · 按压 · 颜色</span></div>
+        <div class="tk-note" style="margin-top:14px">降级：prefers-reduced-motion 下统一 80ms 淡入，位移与缩放归零。</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="intro" id="intro">
+    <div class="in-k">MOTION SPEC · V1</div>
+    <div class="in-t">WorkBuddy Lite</div>
+    <div class="in-s">全流程动效设计</div>
+    <div class="in-rule"></div>
+    <div class="in-meta">8 CHAPTERS · 62S · 1920×1080 · 30FPS</div>
+  </div>
+</div>

@@ -120,7 +120,7 @@ export function ToolPart(props: ToolCallMessagePartProps) {
           <Icon className="size-3.5 shrink-0 text-ink-3" />
           <span className="truncate text-[12.5px] text-ink">{title}</span>
           <ChevronDown
-            className={cn('size-3 shrink-0 text-ink-4 transition-transform', open && 'rotate-180')}
+            className={cn('size-3 shrink-0 text-ink-4 transition-transform duration-[var(--dur-base)] ease-out', open && 'rotate-180')}
           />
         </button>
         <span className="shrink-0 font-mono text-[10.5px] text-ink-4">{STATUS_TEXT[status] || status}</span>
