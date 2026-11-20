@@ -245,7 +245,7 @@ export function RightPanel() {
   }
 
   return (
-    <aside className="relative flex shrink-0 flex-col border-l border-border bg-background" style={{ width }}>
+    <aside className="panel-in relative flex shrink-0 flex-col border-l border-border bg-background" style={{ width }}>
       <div
         onMouseDown={startResize}
         className="absolute -left-[2px] top-0 z-10 h-full w-[4px] cursor-col-resize hover:bg-primary/30"

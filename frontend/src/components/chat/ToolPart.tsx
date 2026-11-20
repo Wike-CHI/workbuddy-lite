@@ -109,7 +109,7 @@ export function ToolPart(props: ToolCallMessagePartProps) {
   }
 
   return (
-    <div className={cn('rounded-md border border-transparent transition-colors hover:border-border/70', open && 'border-border/70')}>
+    <div className={cn('rise-in rounded-md border border-transparent transition-colors hover:border-border/70', open && 'border-border/70')}>
       <div className="flex items-center gap-2 px-1.5 py-1.5">
         <button
           type="button"

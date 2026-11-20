@@ -246,6 +246,25 @@
   .mono-path {
     @apply truncate font-mono text-[11px] text-ink-3;
   }
+
+  /* 入场：消息与工具行 6px 上浮；右栏按宽度展开 */
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+  .rise-in {
+    animation: rise var(--dur-base) var(--mo-out) both;
+  }
+  @keyframes panel-in {
+    from {
+      width: 0;
+    }
+  }
+  .panel-in {
+    animation: panel-in var(--dur-slow) var(--mo-inout);
+  }
 }
 
 /* ---------- 消息正文 ---------- */

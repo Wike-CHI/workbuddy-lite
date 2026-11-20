@@ -58,7 +58,7 @@ function ReasoningPart({ text, status }: ReasoningMessagePartProps) {
 
 export function MessageItem() {
   return (
-    <MessagePrimitive.Root className="group py-2">
+    <MessagePrimitive.Root className="rise-in group py-2">
       <MessagePrimitive.If user>
         <div className="flex justify-start py-2">
           <div className="flex max-w-[88%] flex-col items-start gap-1">
